@@ -1,0 +1,13 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+.env
+Pipfile
+Pipfile.lock
+*.md
+scratchpad/
+**/__pycache__/
