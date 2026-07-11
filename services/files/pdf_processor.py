@@ -52,21 +52,13 @@ class PdfProcessor(BaseProcessor):
         return FileAnalysis(unit_count=pages, unit_name=self.unit_name, token_cost=pages)
 
     def _extract(self, path: str):
+        # Har SAHIFA — bitta segment (mayda qatorlarga bo'linmaydi).
+        # Bu OpenAI so'rovlarini keskin kamaytiradi: tez va barqaror.
         reader = PdfReader(path)
-        pages: list[str] = []
-        for page in reader.pages:
-            pages.append(page.extract_text() or "")
-        # Har sahifa uchun matn qatorlarini alohida segment qilamiz
-        segments: list[str] = []
-        page_line_counts: list[int] = []
-        for text in pages:
-            lines = text.split("\n")
-            page_line_counts.append(len(lines))
-            segments.extend(lines)
-        return page_line_counts, segments
+        pages = [page.extract_text() or "" for page in reader.pages]
+        return None, pages
 
     def _apply(self, context, corrected: list[str], out_path: str) -> None:
-        page_line_counts = context
         font = _ensure_font()
 
         styles = getSampleStyleSheet()
@@ -85,16 +77,13 @@ class PdfProcessor(BaseProcessor):
         )
 
         flow = []
-        idx = 0
-        for page_no, count in enumerate(page_line_counts):
-            page_lines = corrected[idx : idx + count]
-            idx += count
-            for line in page_lines:
+        for page_no, page_text in enumerate(corrected):
+            for line in page_text.split("\n"):
                 if line.strip():
                     flow.append(Paragraph(_escape(line), style))
                 else:
                     flow.append(Spacer(1, 8))
-            if page_no < len(page_line_counts) - 1:
+            if page_no < len(corrected) - 1:
                 flow.append(PageBreak())
 
         if not flow:
