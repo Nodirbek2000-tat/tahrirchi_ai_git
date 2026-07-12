@@ -5,9 +5,13 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# PDF chiqishi uchun ş/ç/ğ/ö harflarini qo'llaydigan shrift (DejaVu)
+# LibreOffice (DOCX -> PDF), shriftlar (ş/ç/ğ/ö) va opencv uchun kutubxona
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends fonts-dejavu-core \
+    && apt-get install -y --no-install-recommends \
+        libreoffice-writer \
+        fonts-dejavu-core \
+        fonts-liberation \
+        libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

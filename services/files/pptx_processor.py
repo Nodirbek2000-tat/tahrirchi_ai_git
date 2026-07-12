@@ -1,37 +1,27 @@
+"""PPTX: faqat matn o'zgaradi, dizayn/rasm/joylashuv saqlanadi.
+
+Matn har slaydning BARCHA <a:t> tugunlaridan yig'iladi (matn qutilari, jadvallar,
+guruhlangan shakllar, ichma-ich) — HECH BIR JOY TASHLANMAYDI.
+"""
+
 from pptx import Presentation
 
 from services.files.base import BaseProcessor, FileAnalysis
 
+_A_T = "{http://schemas.openxmlformats.org/drawingml/2006/main}t"
 
-def _iter_runs(shape):
-    runs = []
-    if shape.has_text_frame:
-        for para in shape.text_frame.paragraphs:
-            for run in para.runs:
-                if run.text and run.text.strip():
-                    runs.append(run)
-    if shape.has_table:
-        for row in shape.table.rows:
-            for cell in row.cells:
-                for para in cell.text_frame.paragraphs:
-                    for run in para.runs:
-                        if run.text and run.text.strip():
-                            runs.append(run)
-    if shape.shape_type == 6:  # GROUP
-        for sub in shape.shapes:
-            runs.extend(_iter_runs(sub))
-    return runs
+
+def _collect_text_nodes(prs) -> list:
+    nodes = []
+    for slide in prs.slides:
+        for t in slide._element.iter(_A_T):
+            if t.text and t.text.strip():
+                nodes.append(t)
+    return nodes
 
 
 class PptxProcessor(BaseProcessor):
     unit_name = "slayd"
-
-    def _collect_runs(self, prs):
-        runs = []
-        for slide in prs.slides:
-            for shape in slide.shapes:
-                runs.extend(_iter_runs(shape))
-        return runs
 
     def analyze(self, path: str) -> FileAnalysis:
         prs = Presentation(path)
@@ -41,12 +31,12 @@ class PptxProcessor(BaseProcessor):
 
     def _extract(self, path: str):
         prs = Presentation(path)
-        runs = self._collect_runs(prs)
-        segments = [run.text for run in runs]
-        return (prs, runs), segments
+        nodes = _collect_text_nodes(prs)
+        segments = [t.text for t in nodes]
+        return (prs, nodes), segments
 
     def _apply(self, context, corrected: list[str], out_path: str) -> None:
-        prs, runs = context
-        for run, text in zip(runs, corrected):
-            run.text = text
+        prs, nodes = context
+        for node, text in zip(nodes, corrected):
+            node.text = text
         prs.save(out_path)
