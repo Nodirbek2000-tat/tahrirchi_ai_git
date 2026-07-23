@@ -37,6 +37,23 @@ def target_languages(source: str) -> list[str]:
     return [lang for lang in LANGS if lang != source]
 
 
+def build_sample(segments: list[str], max_chars: int = 6000) -> str:
+    """Til aniqlash uchun BUTUN hujjatdan vakillik namunasi (boshi+o'rtasi+oxiri)."""
+    full = " ".join(s for s in segments if s and s.strip())
+    if len(full) <= max_chars:
+        return full
+    part = max_chars // 3
+    n = len(full)
+    mid = n // 2
+    return (
+        full[:part]
+        + " "
+        + full[mid - part // 2: mid + part // 2]
+        + " "
+        + full[-part:]
+    )
+
+
 class Translator:
     """Fayl processorlari kutgan interfeys: `correct_many(segments)`."""
 

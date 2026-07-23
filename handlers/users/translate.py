@@ -19,6 +19,7 @@ from services.files import SUPPORTED_EXTENSIONS, UnsupportedFileError, get_proce
 from services.translation import (
     LANG_NAMES,
     Translator,
+    build_sample,
     detect_language,
     target_languages,
 )
@@ -100,10 +101,17 @@ async def translate_receive_file(
         )
         return
 
-    # Manba tilini aniqlash
-    sample = " ".join(s for s in segments if s)[:3000]
-    source = detect_language(sample)
+    # Manba tilini AI bilan BUTUN matndan aniqlash (foizlar bilan)
+    await status_msg.edit_text("🔎 Til aniqlanmoqda...")
+    sample = build_sample(segments)
+    stats = await ai.detect_language_stats(sample)
+    if not stats:
+        src = detect_language(sample)  # zaxira (heuristika)
+        stats = {src: 100}
+    source = max(stats, key=stats.get)
     targets = target_languages(source)
+    ordered = sorted(stats.items(), key=lambda kv: -kv[1])
+    breakdown = " · ".join(f"{LANG_NAMES.get(k, k)} {v}%" for k, v in ordered if v > 0)
 
     is_admin = await admins.is_admin(message.from_user.id)
     user = await users.get(message.from_user.id)
@@ -118,7 +126,8 @@ async def translate_receive_file(
     head = (
         f"📄 <b>{file_name}</b>\n"
         f"📊 {analysis.unit_count} {analysis.unit_name}\n"
-        f"🌐 Aniqlangan til: <b>{LANG_NAMES.get(source, source)}</b>\n\n"
+        f"🌐 Til tarkibi: {breakdown}\n"
+        f"🏆 Asosiy til: <b>{LANG_NAMES.get(source, source)}</b>\n\n"
     )
     if is_admin:
         head += "👑 Admin — <b>bepul</b>.\n\n"

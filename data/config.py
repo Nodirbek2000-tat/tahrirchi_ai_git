@@ -40,7 +40,7 @@ CARD_NUMBER = env.str("CARD_NUMBER", "9860 1701 0951 8093")
 CARD_HOLDER = env.str("CARD_HOLDER", "Nodirbek Shukurov")
 
 # --- Biznes qoidalar ---
-FREE_TOKENS = 7            # yangi userga beriladigan tekin token
+FREE_TOKENS = 30           # yangi userga beriladigan tekin token
 TOKEN_PRICE = 500          # 1 token narxi (so'm)
 CHARS_PER_PAGE = 1800      # docx/txt/pdf: shuncha belgi = 1 sahifa (1 token)
 ROWS_PER_TOKEN = 30        # xlsx: har shuncha qatorga 1 token

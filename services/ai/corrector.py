@@ -59,6 +59,14 @@ def _translate_prompt(target_lang: str) -> str:
     )
 
 
+_DETECT_PROMPT = (
+    "Siz til aniqlagichsiz. Berilgan matnni BUTUNLIGICHA (gaplar va so'zlar bo'yicha) "
+    "tahlil qiling va uning necha foizi o'zbek (uz), rus (ru), ingliz (en) tilida "
+    "ekanini baholang. Faqat matn boshini emas, BUTUN matnni hisobga oling. "
+    "Faqat JSON qaytaring: {\"uz\": <butun son>, \"ru\": <butun son>, "
+    "\"en\": <butun son>} — yig'indisi ~100 bo'lsin."
+)
+
 _MAX_ITEMS_PER_CALL = 30
 _MAX_CHARS_PER_CALL = 4000
 _MAX_RETRIES = 2
@@ -81,6 +89,38 @@ class AICorrector:
 
     async def translate(self, segments: list[str], target_lang: str) -> list[str]:
         return await self._run(segments, _translate_prompt(target_lang))
+
+    async def detect_language_stats(self, text: str) -> dict:
+        """Butun matnni tahlil qilib, {uz, ru, en} foizlarini qaytaradi (yig'indi ~100)."""
+        if not text or not text.strip():
+            return {}
+        try:
+            async with self._sem:
+                response = await self._client.chat.completions.create(
+                    model=self._model,
+                    temperature=0,
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": _DETECT_PROMPT},
+                        {"role": "user", "content": text[:8000]},
+                    ],
+                )
+            await self._record_usage(getattr(response, "usage", None))
+            data = json.loads(response.choices[0].message.content)
+            raw = {}
+            for code in ("uz", "ru", "en"):
+                try:
+                    raw[code] = max(0, int(round(float(data.get(code, 0)))))
+                except (TypeError, ValueError):
+                    raw[code] = 0
+            total = sum(raw.values())
+            if total == 0:
+                return {}
+            # 100 ga normallashtirish
+            return {code: round(val * 100 / total) for code, val in raw.items()}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Til aniqlash xatosi: %s", exc)
+            return {}
 
     # --- Ichki ish ---
     async def _run(self, segments: list[str], system_prompt: str) -> list[str]:
