@@ -21,6 +21,9 @@ class XlsxProcessor(BaseProcessor):
         for ws in wb.worksheets:
             for row in ws.iter_rows():
                 for cell in row:
+                    # Formulalar (=SUM(...)) tarjimaga yuborilmaydi — aks holda buziladi
+                    if cell.data_type == "f":
+                        continue
                     if isinstance(cell.value, str) and cell.value.strip():
                         cells.append(cell)
         segments = [cell.value for cell in cells]

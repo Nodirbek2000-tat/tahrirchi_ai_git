@@ -4,7 +4,7 @@ from aiogram import types
 from aiogram.dispatcher import FSMContext
 
 from data import config
-from db.repositories import PaymentRepository
+from db.repositories import PaymentRepository, SettingRepository
 from keyboards.inline import receipt_keyboard, review_keyboard
 from keyboards.inline.callbacks import buy_cb, receipt_cb
 from loader import bot, dp
@@ -18,13 +18,16 @@ async def choose_package(
     call: types.CallbackQuery,
     callback_data: dict,
     payments: PaymentRepository,
+    settings: SettingRepository,
     state: FSMContext,
 ):
     package = callback_data["package"]
-    if package not in config.TOKEN_PACKAGES:
+    if package not in config.PACKAGE_TOKENS:
         await call.answer("Noto'g'ri paket", show_alert=True)
         return
-    tokens, amount = config.TOKEN_PACKAGES[package]
+    tokens = config.PACKAGE_TOKENS[package]
+    token_price = int(await settings.get_value(config.SETTING_TOKEN_PRICE, config.TOKEN_PRICE))
+    amount = tokens * token_price
 
     payment = await payments.create(
         user_id=call.from_user.id, package=package, tokens=tokens, amount=amount

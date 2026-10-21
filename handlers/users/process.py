@@ -9,15 +9,22 @@ from aiogram.dispatcher import FSMContext
 
 from data import config
 from db.models import TaskStatus
-from db.repositories import AdminRepository, TaskRepository, UserRepository
+from db.repositories import (
+    AdminRepository,
+    SettingRepository,
+    TaskRepository,
+    UserRepository,
+)
 from keyboards.inline import confirm_keyboard, packages_keyboard
 from keyboards.inline.callbacks import process_cb
-from loader import bot, corrector, dp
+from loader import bot, dp
 from services.files import (
     SUPPORTED_EXTENSIONS,
     UnsupportedFileError,
     get_processor,
 )
+from services.files.translit_engine import TranslitReport, scan_file, transliterate_file
+from services.transliteration import KINDS
 from states import ProcessFileState
 
 logger = logging.getLogger(__name__)
@@ -38,11 +45,30 @@ def _cleanup(path: str | None) -> None:
         shutil.rmtree(folder, ignore_errors=True)
 
 
+def _num(value: int) -> str:
+    return f"{value:,}".replace(",", " ")
+
+
+def _kinds_text(found) -> str:
+    return " · ".join(f"{kind}: {_num(found[kind])}" for kind in KINDS if found.get(kind))
+
+
+def _report_text(report: TranslitReport) -> str:
+    if not report.total_found:
+        return "🔎 O'zgartiriladigan harf topilmadi."
+    return (
+        f"🔎 Topildi: <b>{_num(report.total_found)}</b> ta ({_kinds_text(report.found)})\n"
+        f"✏️ O'zgartirildi: <b>{_num(report.converted)}</b> ta\n"
+        f"🔁 {report.passes} bosqichda tekshirildi · qolgan: <b>{report.remaining}</b>"
+    )
+
+
 @dp.message_handler(content_types=[types.ContentType.DOCUMENT], state="*")
 async def receive_file(
     message: types.Message,
     users: UserRepository,
     admins: AdminRepository,
+    settings: SettingRepository,
     state: FSMContext,
 ):
     document = message.document
@@ -89,6 +115,26 @@ async def receive_file(
         )
         return
 
+    # 1-tahlil: faylda nechta o'giriladigan harf bor (PDF avval Word'ga o'girilgach sanaladi)
+    found = None
+    if ext != ".pdf":
+        try:
+            found = await asyncio.to_thread(scan_file, in_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Oldindan skan qilib bo'lmadi: %s", exc)
+    if found is not None and not sum(found.values()):
+        _cleanup(in_path)
+        await status_msg.edit_text(
+            f"📄 <b>{file_name}</b>\n\n"
+            "🔎 Faylda sh, ch, gʻ, oʻ harflari topilmadi — o'zgartirish shart emas.\n"
+            "🪙 Token yechilmadi."
+        )
+        return
+    found_line = (
+        f"🔎 Topildi: <b>{_num(sum(found.values()))}</b> ta harf ({_kinds_text(found)})\n"
+        if found else ""
+    )
+
     is_admin = await admins.is_admin(message.from_user.id)
     user = await users.get(message.from_user.id)
     tokens = user.tokens if user else 0
@@ -105,7 +151,8 @@ async def receive_file(
     if is_admin:
         await status_msg.edit_text(
             f"📄 <b>{file_name}</b>\n"
-            f"📊 {analysis.unit_count} {analysis.unit_name} aniqlandi.\n\n"
+            f"📊 {analysis.unit_count} {analysis.unit_name} aniqlandi.\n"
+            f"{found_line}\n"
             f"👑 Admin — <b>bepul</b>.\n\n"
             f"Tahrirni boshlaymizmi?",
             reply_markup=confirm_keyboard(),
@@ -115,18 +162,23 @@ async def receive_file(
     if tokens < cost:
         _cleanup(in_path)
         await state.finish()
+        token_price = int(
+            await settings.get_value(config.SETTING_TOKEN_PRICE, config.TOKEN_PRICE)
+        )
         await status_msg.edit_text(
             f"📄 <b>{file_name}</b>\n"
-            f"📊 {analysis.unit_count} {analysis.unit_name} — <b>{cost} token</b> kerak.\n\n"
+            f"📊 {analysis.unit_count} {analysis.unit_name} — <b>{cost} token</b> kerak.\n"
+            f"{found_line}\n"
             f"💰 Balansingiz: <b>{tokens}</b> token — <b>yetarli emas</b>.\n"
             f"Quyidan token sotib oling:",
-            reply_markup=packages_keyboard(),
+            reply_markup=packages_keyboard(token_price),
         )
         return
 
     await status_msg.edit_text(
         f"📄 <b>{file_name}</b>\n"
-        f"📊 {analysis.unit_count} {analysis.unit_name} aniqlandi.\n\n"
+        f"📊 {analysis.unit_count} {analysis.unit_name} aniqlandi.\n"
+        f"{found_line}\n"
         f"🪙 Ketadi: <b>{cost} token</b>\n"
         f"💰 Balans: {tokens} → <b>{tokens - cost}</b> qoladi\n\n"
         f"Tahrirni boshlaymizmi?",
@@ -152,6 +204,7 @@ async def start_process(
     call: types.CallbackQuery,
     users: UserRepository,
     tasks: TaskRepository,
+    settings: SettingRepository,
     state: FSMContext,
 ):
     await call.answer()
@@ -172,9 +225,12 @@ async def start_process(
         if not ok:
             _cleanup(file_path)
             await state.finish()
+            token_price = int(
+                await settings.get_value(config.SETTING_TOKEN_PRICE, config.TOKEN_PRICE)
+            )
             await call.message.edit_text(
                 "💰 Token yetarli emas. Quyidan sotib oling:",
-                reply_markup=packages_keyboard(),
+                reply_markup=packages_keyboard(token_price),
             )
             return
 
@@ -182,22 +238,20 @@ async def start_process(
     task = await tasks.create(call.from_user.id, file_name, ext, cost)
     out_path = os.path.join(os.path.dirname(file_path), f"tahrirlangan_{file_name}")
 
-    await call.message.edit_text(
-        "⏳ Tahrir qilinmoqda... Bu bir necha daqiqa vaqt olishi mumkin."
-    )
+    await call.message.edit_text("⏳ Harflar o'girilmoqda va qayta tekshirilmoqda...")
 
     try:
-        processor = get_processor(file_name)
-        await processor.process(file_path, out_path, corrector)
+        report = await asyncio.to_thread(transliterate_file, file_path, out_path)
         await tasks.set_status(task.id, TaskStatus.DONE)
 
+        summary = _report_text(report)
         if is_admin:
-            caption = "✅ Tayyor!\n👑 Admin — bepul."
+            caption = f"✅ Tayyor!\n\n{summary}\n\n👑 Admin — bepul."
         else:
             user = await users.get(call.from_user.id)
             caption = (
-                f"✅ Tayyor!\n🪙 {cost} token ishlatildi.\n"
-                f"💰 Qoldi: <b>{user.tokens}</b> token."
+                f"✅ Tayyor!\n\n{summary}\n\n"
+                f"🪙 {cost} token ishlatildi · 💰 Qoldi: <b>{user.tokens}</b> token."
             )
         await bot.send_document(
             call.message.chat.id,

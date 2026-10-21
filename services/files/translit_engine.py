@@ -1,0 +1,693 @@
+"""Fayllarni yangi alifboga to'liq o'girish — AI'siz, XML darajasida.
+
+Word / Excel / PowerPoint fayli (zip) ichidagi matnli XML qismlar to'g'ridan-to'g'ri
+tahrirlanadi: faqat matn harflari o'zgaradi — style, shrift, rang, rasm, jadval va
+joylashuv bayt-bayt o'zgarishsiz qoladi (o'zgarmagan qismlar asl holida nusxalanadi).
+
+Muhim: Word, Excel va PowerPoint bitta so'zni ko'pincha bir nechta bo'lakka ("run")
+bo'lib saqlaydi — masalan "s" bir bo'lakda, "hahar" boshqasida yoki "o" va "ʻ" alohida.
+Shuning uchun harflar paragraf (Excel'da katak) darajasida birlashtirib qidiriladi,
+yangi harf esa asl bo'lagiga qaytarib yoziladi — hech bir juftlik qolib ketmaydi.
+
+Qamrov:
+  Word       — asosiy matn, jadval, kolontitul, izoh, sahifa osti izohlari, matn qutilari,
+               havolalar, diagramma va SmartArt matni
+  PowerPoint — slaydlar, izohlar (notes), slayd master va layout'lar, jadval, guruh,
+               diagramma, SmartArt
+  Excel      — kataklar (shared/inline/rich text), izohlar, shakllar, diagrammalar;
+               jadval ustun nomlari va formulalardagi havolalar sarlavhaga moslab o'giriladi,
+               formulalar ichidagi matnli qiymatlar, filtr va ro'yxat qiymatlari ham o'giriladi
+  Ichki fayllar — diagramma ichidagi Excel ma'lumotlari (embeddings) ham o'giriladi
+
+Bosqichlar:
+  1) skan       — nechta sh/ch/gʻ/oʻ borligi aniqlanadi
+  2) o'girish   — har bir topilgan joy almashtiriladi
+  3) qayta skan — qolgan bo'lsa yana o'giriladi (maksimal 3 marta)
+  4) yozish     — faqat o'zgargan qismlar qayta yoziladi
+  5) yakuniy tekshiruv — SAQLANGAN fayl qayta ochilib skan qilinadi
+"""
+
+import io
+import logging
+import os
+import re
+import zipfile
+from collections import Counter
+from dataclasses import dataclass, field
+
+from lxml import etree
+
+from services.files.convert import docx_to_pdf, pdf_to_docx
+from services.files.txt_processor import _read as read_text
+from services.transliteration import (
+    APOSTROPHES,
+    count_matches,
+    iter_matches,
+    to_new_alphabet,
+)
+
+logger = logging.getLogger(__name__)
+
+_MAX_ROUNDS = 3
+_XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+_PARSER = etree.XMLParser(
+    resolve_entities=False, no_network=True, huge_tree=True, remove_blank_text=False
+)
+_EMBED_RE = re.compile(r"^(word|ppt|xl)/embeddings/[^/]+\.(xlsx|docx|pptx)$", re.IGNORECASE)
+
+# Transitional va Strict OOXML nomlar fazolari
+_W = ("http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+      "http://purl.oclc.org/ooxml/wordprocessingml/main")
+_A = ("http://schemas.openxmlformats.org/drawingml/2006/main",
+      "http://purl.oclc.org/ooxml/drawingml/main")
+_S = ("http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+      "http://purl.oclc.org/ooxml/spreadsheetml/main")
+_C = ("http://schemas.openxmlformats.org/drawingml/2006/chart",
+      "http://purl.oclc.org/ooxml/drawingml/chart")
+_P = ("http://schemas.openxmlformats.org/presentationml/2006/main",
+      "http://purl.oclc.org/ooxml/presentationml/main")
+_XM = ("http://schemas.microsoft.com/office/excel/2006/main",)
+_TC = ("http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments",)
+
+
+def _q(namespaces, *names) -> frozenset:
+    return frozenset(f"{{{ns}}}{name}" for ns in namespaces for name in names)
+
+
+# ======================================================================= Matn tugunlari
+@dataclass(frozen=True)
+class _Spec:
+    text: frozenset                     # matn tugunlari
+    groups: frozenset                   # birlashtirish birligi; bo'sh => har tugun alohida
+    breaks: frozenset = frozenset()     # so'zlarni ajratuvchi elementlar (tab, br ...)
+    syms: frozenset = frozenset()       # w:sym — belgi sifatida qo'yilgan tutuq
+    exclude: frozenset = frozenset()    # shu ajdod ichidagi matn olinmaydi
+    preserve_space: bool = False        # xml:space="preserve" kerakmi
+
+
+_WORD = _Spec(
+    text=_q(_W, "t"),
+    groups=_q(_W, "p"),
+    breaks=_q(_W, "tab", "br", "cr", "ptab", "noBreakHyphen", "drawing", "pict",
+              "object", "fldChar", "footnoteReference", "endnoteReference"),
+    syms=_q(_W, "sym"),
+    preserve_space=True,
+)
+_DRAWING = _Spec(text=_q(_A, "t"), groups=_q(_A, "p"), breaks=_q(_A, "br"))
+_SHEET = _Spec(
+    text=_q(_S, "t"),
+    groups=_q(_S, "si", "is", "text"),   # shared string / inline string / izoh
+    exclude=_q(_S, "rPh"),               # fonetik yozuvlar
+    preserve_space=True,
+)
+_CHART_CACHE = _Spec(text=_q(_C, "v"), groups=frozenset())
+_PPT_OLD_COMMENT = _Spec(text=_q(_P, "text"), groups=frozenset())
+_XL_THREADED = _Spec(text=_q(_TC, "text"), groups=frozenset())
+
+# Excel uchun qo'shimcha ishlov turlari
+_XL_SHEET = "xl_sheet"   # formulalar, formula natijasi (keshi), filtr qiymatlari
+_XL_TABLE = "xl_table"   # jadval ustun nomlari, jadval formulalari
+_XL_BOOK = "xl_book"     # nomlangan diapazon formulalari
+
+_WORDS = (_WORD, _DRAWING)
+
+# Content-Type bo'yicha: (qo'shimcha nomi, matn qoidalari, qo'shimcha ishlovlar)
+_CT_RULES = (
+    ("wordprocessingml.document.main+xml", _WORDS, ()),
+    ("wordprocessingml.template.main+xml", _WORDS, ()),
+    ("ms-word.document.macroEnabled.main+xml", _WORDS, ()),
+    ("wordprocessingml.header+xml", _WORDS, ()),
+    ("wordprocessingml.footer+xml", _WORDS, ()),
+    ("wordprocessingml.footnotes+xml", _WORDS, ()),
+    ("wordprocessingml.endnotes+xml", _WORDS, ()),
+    ("wordprocessingml.comments+xml", _WORDS, ()),
+    ("spreadsheetml.sharedStrings+xml", (_SHEET,), ()),
+    ("spreadsheetml.worksheet+xml", (_SHEET,), (_XL_SHEET,)),
+    ("spreadsheetml.comments+xml", (_SHEET,), ()),
+    ("spreadsheetml.table+xml", (), (_XL_TABLE,)),
+    ("spreadsheetml.sheet.main+xml", (), (_XL_BOOK,)),
+    ("ms-excel.sheet.macroEnabled.main+xml", (), (_XL_BOOK,)),
+    ("ms-excel.threadedcomments+xml", (_XL_THREADED,), ()),
+    ("presentationml.slide+xml", (_DRAWING,), ()),
+    ("presentationml.notesSlide+xml", (_DRAWING,), ()),
+    ("presentationml.slideMaster+xml", (_DRAWING,), ()),
+    ("presentationml.slideLayout+xml", (_DRAWING,), ()),
+    ("presentationml.notesMaster+xml", (_DRAWING,), ()),
+    ("presentationml.handoutMaster+xml", (_DRAWING,), ()),
+    ("presentationml.comments+xml", (_PPT_OLD_COMMENT,), ()),
+    ("ms-powerpoint.comments+xml", (_DRAWING,), ()),
+    ("drawingml.chart+xml", (_DRAWING, _CHART_CACHE), ()),
+    ("drawingml.diagramData+xml", (_DRAWING,), ()),
+    ("drawingml.diagramDrawing+xml", (_DRAWING,), ()),
+    ("officedocument.drawing+xml", (_DRAWING,), ()),
+)
+
+# Content-Type topilmasa — fayl nomi bo'yicha (zaxira)
+_NAME_RULES = (
+    (re.compile(r"^word/(document|header\d*|footer\d*|footnotes|endnotes|comments)\.xml$"),
+     _WORDS, ()),
+    (re.compile(r"^xl/(sharedstrings|comments\d*)\.xml$"), (_SHEET,), ()),
+    (re.compile(r"^xl/worksheets/sheet\d+\.xml$"), (_SHEET,), (_XL_SHEET,)),
+    (re.compile(r"^xl/tables/table\d+\.xml$"), (), (_XL_TABLE,)),
+    (re.compile(r"^xl/workbook\.xml$"), (), (_XL_BOOK,)),
+    (re.compile(r"^ppt/(slides/slide|notesslides/notesslide|slidemasters/slidemaster|"
+                r"slidelayouts/slidelayout)\d+\.xml$"), (_DRAWING,), ()),
+    (re.compile(r"^(word|ppt|xl)/charts/chart\d+\.xml$"), (_DRAWING, _CHART_CACHE), ()),
+    (re.compile(r"^(word|ppt|xl)/diagrams/(data|drawing)\d+\.xml$"), (_DRAWING,), ()),
+    (re.compile(r"^xl/drawings/drawing\d+\.xml$"), (_DRAWING,), ()),
+)
+
+
+@dataclass
+class TranslitReport:
+    found: Counter = field(default_factory=Counter)  # boshida topilganlar (turi bo'yicha)
+    converted: int = 0                               # o'zgartirilganlar
+    remaining: int = 0                               # yakuniy tekshiruvda qolganlar
+    passes: int = 0                                  # nechta tahlil bosqichi o'tdi
+
+    @property
+    def total_found(self) -> int:
+        return sum(self.found.values())
+
+
+@dataclass
+class _Part:
+    root: object
+    specs: tuple
+    extras: tuple
+    data: bytes
+
+
+# ======================================================================= XML yordamchilar
+def _content_types(zin: zipfile.ZipFile) -> dict:
+    try:
+        root = etree.fromstring(zin.read("[Content_Types].xml"), _PARSER)
+    except (KeyError, etree.XMLSyntaxError):
+        return {}
+    result = {}
+    for el in root:
+        if isinstance(el.tag, str) and el.tag.endswith("}Override"):
+            name = (el.get("PartName") or "").lstrip("/").lower()
+            result[name] = el.get("ContentType") or ""
+    return result
+
+
+def _rules_for(name: str, ctypes: dict) -> tuple[tuple, tuple]:
+    lname = name.lower()
+    ct = ctypes.get(lname)
+    if ct:
+        for suffix, specs, extras in _CT_RULES:
+            if ct.endswith(suffix):
+                return specs, extras
+        return (), ()
+    for rx, specs, extras in _NAME_RULES:
+        if rx.match(lname):
+            return specs, extras
+    return (), ()
+
+
+def _sym_char(el) -> str | None:
+    """w:sym tutuq belgisi bo'lsa, o'sha belgini qaytaradi."""
+    for key, value in el.attrib.items():
+        if key.endswith("}char"):
+            try:
+                ch = chr(int(value, 16))
+            except ValueError:
+                return None
+            return ch if ch in APOSTROPHES else None
+    return None
+
+
+def _build_groups(root, spec: _Spec) -> dict:
+    """Har bir guruh (paragraf) uchun hujjat tartibidagi bo'laklar ro'yxati.
+
+    Bo'lak: ("t", element) | ("sym", element, belgi) | None (so'z chegarasi).
+    """
+    groups: dict = {}
+    for el in root.iter(*(spec.text | spec.breaks | spec.syms)):
+        grp = el
+        if spec.groups:
+            grp = None
+            parent = el.getparent()
+            excluded = False
+            while parent is not None:
+                ptag = parent.tag
+                if ptag in spec.exclude:
+                    excluded = True
+                    break
+                if ptag in spec.groups:
+                    grp = parent
+                    break
+                parent = parent.getparent()
+            if excluded:
+                continue
+            if grp is None:
+                grp = el
+
+        pieces = groups.get(grp)
+        if pieces is None:
+            pieces = groups[grp] = []
+
+        tag = el.tag
+        if tag in spec.text:
+            pieces.append(("t", el))
+        elif tag in spec.syms:
+            ch = _sym_char(el)
+            pieces.append(("sym", el, ch) if ch else None)
+        else:
+            pieces.append(None)
+    return groups
+
+
+def _segments(pieces):
+    seg = []
+    for piece in pieces:
+        if piece is None:
+            if seg:
+                yield seg
+                seg = []
+        else:
+            seg.append(piece)
+    if seg:
+        yield seg
+
+
+def _piece_text(piece) -> str:
+    return (piece[1].text or "") if piece[0] == "t" else piece[2]
+
+
+def _scan_text(root, specs, counter: Counter) -> None:
+    for spec in specs:
+        for pieces in _build_groups(root, spec).values():
+            for seg in _segments(pieces):
+                joined = "".join(_piece_text(p) for p in seg)
+                if len(joined) >= 2:
+                    counter.update(kind for _, kind, _ in iter_matches(joined))
+
+
+def _apply_text(root, specs) -> int:
+    changed = 0
+    for spec in specs:
+        for pieces in _build_groups(root, spec).values():
+            for seg in _segments(pieces):
+                texts = [_piece_text(p) for p in seg]
+                joined = "".join(texts)
+                if len(joined) < 2:
+                    continue
+                matches = list(iter_matches(joined))
+                if not matches:
+                    continue
+
+                # Birlashtirilgan matndagi pozitsiya -> (bo'lak, ichki o'rni)
+                owner = []
+                for i, text in enumerate(texts):
+                    owner.extend((i, j) for j in range(len(text)))
+                chars = [list(text) for text in texts]
+                for start, _, replacement in matches:
+                    i, j = owner[start]
+                    chars[i][j] = replacement      # yangi harf birinchi harf o'rnida
+                    i, j = owner[start + 1]
+                    chars[i][j] = None             # ikkinchi belgi (h / tutuq) o'chiriladi
+                changed += len(matches)
+
+                for piece, piece_chars, old in zip(seg, chars, texts):
+                    new = "".join(c for c in piece_chars if c is not None)
+                    if new == old:
+                        continue
+                    if piece[0] == "t":
+                        piece[1].text = new
+                        if spec.preserve_space and new != new.strip():
+                            piece[1].set(_XML_SPACE, "preserve")
+                    else:  # w:sym tutuq — butunlay olib tashlanadi
+                        parent = piece[1].getparent()
+                        if parent is not None:
+                            parent.remove(piece[1])
+    return changed
+
+
+# ======================================================================= Excel qo'shimchalari
+_F_SHEET = _q(_S, "f", "formula", "formula1", "formula2") | _q(_XM, "f")
+_F_TABLE = _q(_S, "calculatedColumnFormula", "totalsRowFormula")
+_F_BOOK = _q(_S, "definedName")
+_FILTER_VAL = _q(_S, "filter", "customFilter")
+_CELL = _q(_S, "c")
+_VALUE = _q(_S, "v")
+_TABLE_COL = _q(_S, "tableColumn")
+_TABLE = _q(_S, "table")
+_SHEET_NAME = _q(_S, "sheet")
+
+_STR_LIT_RE = re.compile(r'"(?:[^"]|"")*"')
+# Matnli qiymat havola bo'lsa (INDIRECT("Varaq!A1"), fayl yo'li) — tegilmaydi
+_REF_LITERAL_RE = re.compile(r"![$]?[A-Za-z]{1,3}[$]?\d|\\")
+
+
+@dataclass
+class _XlContext:
+    col_refs: list           # [(regex, yangi_nom)] — jadval ustuni nomlari
+    protected: frozenset     # varaq / nomlangan diapazon / jadval nomlari (kichik harfda)
+
+
+def _esc_struct(name: str) -> str:
+    """Excel strukturaviy havolasidagi maxsus belgilarni ekranlash: [ ] # '"""
+    return re.sub(r"([\[\]#'])", r"'\1", name)
+
+
+def _xl_context(parts: dict) -> _XlContext:
+    col_refs = []
+    protected = set()
+    for part in parts.values():
+        if _XL_TABLE in part.extras:
+            for tbl in part.root.iter(*_TABLE):
+                for attr in ("name", "displayName"):
+                    if tbl.get(attr):
+                        protected.add(tbl.get(attr).lower())
+            for col in part.root.iter(*_TABLE_COL):
+                old = col.get("name")
+                if not old:
+                    continue
+                new = to_new_alphabet(old)
+                if new != old:
+                    # [Nom], [@Nom] va qavssiz ",Nom]" ([[#This Row],Nom]) shakllari
+                    rx = re.compile(
+                        r"(\[@?|,\s*)" + re.escape(_esc_struct(old)) + r"(\])", re.IGNORECASE
+                    )
+                    col_refs.append((rx, _esc_struct(new)))
+        if _XL_BOOK in part.extras:
+            for el in part.root.iter(*_SHEET_NAME):
+                if el.get("name"):
+                    protected.add(el.get("name").lower())
+            for el in part.root.iter(*_F_BOOK):
+                if el.get("name"):
+                    protected.add(el.get("name").lower())
+    return _XlContext(col_refs, frozenset(protected))
+
+
+def _literal_ok(inner: str, ctx: _XlContext) -> bool:
+    return bool(inner) and inner.lower() not in ctx.protected and not _REF_LITERAL_RE.search(inner)
+
+
+def _formula_count(text: str | None, ctx: _XlContext, counter: Counter) -> None:
+    if not text or '"' not in text:
+        return
+    for m in _STR_LIT_RE.finditer(text):
+        inner = m.group(0)[1:-1]
+        if _literal_ok(inner, ctx):
+            counter.update(count_matches(inner))
+
+
+def _formula_convert(text: str | None, ctx: _XlContext) -> tuple[str | None, int]:
+    if not text:
+        return text, 0
+    changed = 0
+
+    def repl(m):
+        nonlocal changed
+        inner = m.group(0)[1:-1]
+        if not _literal_ok(inner, ctx):
+            return m.group(0)
+        n = sum(count_matches(inner).values())
+        if not n:
+            return m.group(0)
+        changed += n
+        return '"' + to_new_alphabet(inner) + '"'
+
+    new = _STR_LIT_RE.sub(repl, text) if '"' in text else text
+    for rx, new_name in ctx.col_refs:   # jadval ustunlariga havolalar sarlavhaga moslanadi
+        new = rx.sub(lambda m, nn=new_name: m.group(1) + nn + m.group(2), new)
+    return new, changed
+
+
+def _attr_count(el, attr: str, counter: Counter) -> None:
+    value = el.get(attr)
+    if value:
+        counter.update(count_matches(value))
+
+
+def _attr_convert(el, attr: str) -> int:
+    value = el.get(attr)
+    if not value:
+        return 0
+    n = sum(count_matches(value).values())
+    if n:
+        el.set(attr, to_new_alphabet(value))
+    return n
+
+
+def _str_results(root):
+    """Formula natijasi matn bo'lgan kataklarning keshdagi qiymati (<c t="str"><v>)."""
+    for cell in root.iter(*_CELL):
+        if cell.get("t") == "str":
+            for child in cell:
+                if child.tag in _VALUE:
+                    yield child
+
+
+def _extras_count(part: _Part, ctx: _XlContext, counter: Counter) -> None:
+    root = part.root
+    for kind in part.extras:
+        if kind == _XL_SHEET:
+            for el in root.iter(*_F_SHEET):
+                _formula_count(el.text, ctx, counter)
+            for v in _str_results(root):
+                counter.update(count_matches(v.text or ""))
+            for el in root.iter(*_FILTER_VAL):
+                _attr_count(el, "val", counter)
+        elif kind == _XL_TABLE:
+            for el in root.iter(*_TABLE_COL):
+                _attr_count(el, "name", counter)
+                _attr_count(el, "totalsRowLabel", counter)
+            for el in root.iter(*_F_TABLE):
+                _formula_count(el.text, ctx, counter)
+            for el in root.iter(*_FILTER_VAL):
+                _attr_count(el, "val", counter)
+        elif kind == _XL_BOOK:
+            for el in root.iter(*_F_BOOK):
+                _formula_count(el.text, ctx, counter)
+
+
+def _extras_apply(part: _Part, ctx: _XlContext) -> int:
+    root = part.root
+    changed = 0
+
+    def formula_elements(tags):
+        nonlocal changed
+        for el in root.iter(*tags):
+            new, n = _formula_convert(el.text, ctx)
+            if new != el.text:
+                el.text = new
+            changed += n
+
+    for kind in part.extras:
+        if kind == _XL_SHEET:
+            formula_elements(_F_SHEET)
+            for v in _str_results(root):
+                n = sum(count_matches(v.text or "").values())
+                if n:
+                    v.text = to_new_alphabet(v.text)
+                    changed += n
+            for el in root.iter(*_FILTER_VAL):
+                changed += _attr_convert(el, "val")
+        elif kind == _XL_TABLE:
+            for el in root.iter(*_TABLE_COL):
+                changed += _attr_convert(el, "name")
+                changed += _attr_convert(el, "totalsRowLabel")
+            formula_elements(_F_TABLE)
+            for el in root.iter(*_FILTER_VAL):
+                changed += _attr_convert(el, "val")
+        elif kind == _XL_BOOK:
+            formula_elements(_F_BOOK)
+    return changed
+
+
+# ======================================================================= Fayl darajasi
+def _serialize(root, original: bytes) -> bytes:
+    standalone = True if b"standalone" in original[:200] else None
+    return etree.tostring(
+        root.getroottree(), xml_declaration=True, encoding="UTF-8", standalone=standalone
+    )
+
+
+def _load_parts(zin: zipfile.ZipFile) -> dict:
+    ctypes = _content_types(zin)
+    parts = {}
+    for info in zin.infolist():
+        specs, extras = _rules_for(info.filename, ctypes)
+        if not specs and not extras:
+            continue
+        data = zin.read(info.filename)
+        try:
+            root = etree.fromstring(data, _PARSER)
+        except etree.XMLSyntaxError as exc:
+            logger.warning("XML o'qilmadi (%s): %s", info.filename, exc)
+            continue
+        parts[info.filename] = _Part(root, specs, extras, data)
+    return parts
+
+
+def _scan_parts(parts: dict) -> Counter:
+    counter: Counter = Counter()
+    ctx = _xl_context(parts)
+    for part in parts.values():
+        _scan_text(part.root, part.specs, counter)
+        if part.extras:
+            _extras_count(part, ctx, counter)
+    return counter
+
+
+def _scan_zip(zin: zipfile.ZipFile, depth: int = 0) -> Counter:
+    counter = _scan_parts(_load_parts(zin))
+    if depth == 0:
+        for name in zin.namelist():
+            if _EMBED_RE.match(name):
+                try:
+                    with zipfile.ZipFile(io.BytesIO(zin.read(name))) as sub:
+                        counter.update(_scan_zip(sub, depth + 1))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Ichki fayl skan qilinmadi (%s): %s", name, exc)
+    return counter
+
+
+def _copy_info(info: zipfile.ZipInfo) -> zipfile.ZipInfo:
+    new = zipfile.ZipInfo(info.filename, date_time=info.date_time)
+    new.compress_type = info.compress_type
+    new.external_attr = info.external_attr
+    new.create_system = info.create_system
+    return new
+
+
+def _convert_zip(zin: zipfile.ZipFile, zout: zipfile.ZipFile, report: TranslitReport,
+                 depth: int = 0) -> int:
+    """Zip ichidagi barcha qismlarni o'giradi. Bajarilgan o'girish raundlari sonini qaytaradi."""
+    parts = _load_parts(zin)
+
+    # 1) Skan
+    found = _scan_parts(parts)
+    report.found.update(found)
+
+    # 2-3) O'girish + xotirada qayta skan (qolsa yana o'giriladi)
+    changed: set = set()
+    remaining = sum(found.values())
+    rounds = 0
+    while remaining and rounds < _MAX_ROUNDS:
+        rounds += 1
+        ctx = _xl_context(parts)   # jadval nomlari o'girilishidan OLDIN olinadi
+        for name, part in parts.items():
+            n = _apply_text(part.root, part.specs)
+            if part.extras:
+                n += _extras_apply(part, ctx)
+            if n:
+                changed.add(name)
+                report.converted += n
+        remaining = sum(_scan_parts(parts).values())
+
+    # 4) Yozish — o'zgarmagan qismlar asl baytlari bilan nusxalanadi
+    for info in zin.infolist():
+        name = info.filename
+        if name in changed:
+            data = _serialize(parts[name].root, parts[name].data)
+        elif depth == 0 and _EMBED_RE.match(name):
+            data = _convert_embedded(zin.read(name), report)
+        else:
+            data = zin.read(name)
+        zout.writestr(_copy_info(info), data)
+    return rounds
+
+
+def _convert_embedded(data: bytes, report: TranslitReport) -> bytes:
+    """Ichki Word/Excel/PowerPoint fayl (masalan diagramma ma'lumotlari)."""
+    try:
+        sub_report = TranslitReport()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(data)) as sub_in, zipfile.ZipFile(buf, "w") as sub_out:
+            _convert_zip(sub_in, sub_out, sub_report, depth=1)
+        if not sub_report.converted:
+            return data
+        report.found.update(sub_report.found)
+        report.converted += sub_report.converted
+        return buf.getvalue()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Ichki fayl o'girilmadi, asl holida qoldi: %s", exc)
+        return data
+
+
+def _leftovers(path: str, limit: int = 10) -> list[str]:
+    """Yakuniy tekshiruvda qolgan matn joylari (log uchun)."""
+    found = []
+    with zipfile.ZipFile(path) as zin:
+        for name, part in _load_parts(zin).items():
+            for spec in part.specs:
+                for pieces in _build_groups(part.root, spec).values():
+                    for seg in _segments(pieces):
+                        joined = "".join(_piece_text(p) for p in seg)
+                        for start, _, _ in iter_matches(joined):
+                            found.append(f"{name}: …{joined[max(0, start - 15):start + 15]}…")
+                            if len(found) >= limit:
+                                return found
+    return found
+
+
+# ======================================================================= Ommaviy API
+def scan_file(path: str) -> Counter | None:
+    """Fayldagi o'giriladigan harflar soni (turi bo'yicha). PDF uchun None."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".txt":
+        return count_matches(read_text(path))
+    if ext in (".docx", ".xlsx", ".pptx"):
+        with zipfile.ZipFile(path) as zin:
+            return _scan_zip(zin)
+    return None
+
+
+def _transliterate_ooxml(in_path: str, out_path: str) -> TranslitReport:
+    report = TranslitReport()
+    with zipfile.ZipFile(in_path) as zin, zipfile.ZipFile(out_path, "w") as zout:
+        rounds = _convert_zip(zin, zout, report)
+
+    # 5) Yakuniy tekshiruv — saqlangan fayl qayta ochiladi
+    report.remaining = sum((scan_file(out_path) or Counter()).values())
+    report.passes = 1 + rounds + 1   # skan + o'girish raundlari + yakuniy tekshiruv
+    if report.remaining:
+        logger.warning(
+            "Yakuniy tekshiruvda %s ta joy qoldi: %s", report.remaining, _leftovers(out_path)
+        )
+    return report
+
+
+def _transliterate_txt(in_path: str, out_path: str) -> TranslitReport:
+    report = TranslitReport()
+    text = read_text(in_path)
+    report.found = count_matches(text)
+
+    remaining = report.total_found
+    rounds = 0
+    while remaining and rounds < _MAX_ROUNDS:
+        rounds += 1
+        before = sum(count_matches(text).values())
+        text = to_new_alphabet(text)
+        remaining = sum(count_matches(text).values())
+        report.converted += before - remaining
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+    report.remaining = sum(count_matches(read_text(out_path)).values())
+    report.passes = 1 + rounds + 1
+    return report
+
+
+def transliterate_file(in_path: str, out_path: str) -> TranslitReport:
+    """Faylni yangi alifboga o'giradi (bloklovchi — asyncio.to_thread bilan chaqiring)."""
+    ext = os.path.splitext(in_path)[1].lower()
+    if ext == ".txt":
+        return _transliterate_txt(in_path, out_path)
+    if ext in (".docx", ".xlsx", ".pptx"):
+        return _transliterate_ooxml(in_path, out_path)
+    if ext == ".pdf":
+        workdir = os.path.dirname(out_path) or "."
+        conv_docx = os.path.join(workdir, "_conv.docx")
+        edited_docx = os.path.join(workdir, "_edited.docx")
+        pdf_to_docx(in_path, conv_docx)
+        report = _transliterate_ooxml(conv_docx, edited_docx)
+        docx_to_pdf(edited_docx, out_path)
+        return report
+    raise ValueError(f"Qo'llab-quvvatlanmaydigan fayl: {ext}")

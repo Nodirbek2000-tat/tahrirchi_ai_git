@@ -9,7 +9,12 @@ from aiogram.dispatcher import FSMContext
 
 from data import config
 from db.models import TaskStatus
-from db.repositories import AdminRepository, TaskRepository, UserRepository
+from db.repositories import (
+    AdminRepository,
+    SettingRepository,
+    TaskRepository,
+    UserRepository,
+)
 from keyboards.default import BTN_TRANSLATE
 from keyboards.inline import packages_keyboard
 from keyboards.inline.callbacks import translate_lang_cb
@@ -59,6 +64,7 @@ async def translate_receive_file(
     message: types.Message,
     users: UserRepository,
     admins: AdminRepository,
+    settings: SettingRepository,
     state: FSMContext,
 ):
     document = message.document
@@ -134,11 +140,14 @@ async def translate_receive_file(
     elif tokens < cost:
         _cleanup(in_path)
         await state.finish()
+        token_price = int(
+            await settings.get_value(config.SETTING_TOKEN_PRICE, config.TOKEN_PRICE)
+        )
         await status_msg.edit_text(
             head
             + f"🪙 Kerak: <b>{cost} token</b> · Balans: <b>{tokens}</b> — yetarli emas.\n"
             "Quyidan token sotib oling:",
-            reply_markup=packages_keyboard(),
+            reply_markup=packages_keyboard(token_price),
         )
         return
     else:
@@ -158,6 +167,7 @@ async def translate_do(
     callback_data: dict,
     users: UserRepository,
     tasks: TaskRepository,
+    settings: SettingRepository,
     state: FSMContext,
 ):
     await call.answer()
@@ -184,9 +194,12 @@ async def translate_do(
         if not ok:
             _cleanup(file_path)
             await state.finish()
+            token_price = int(
+                await settings.get_value(config.SETTING_TOKEN_PRICE, config.TOKEN_PRICE)
+            )
             await call.message.edit_text(
                 "💰 Token yetarli emas. Quyidan sotib oling:",
-                reply_markup=packages_keyboard(),
+                reply_markup=packages_keyboard(token_price),
             )
             return
 

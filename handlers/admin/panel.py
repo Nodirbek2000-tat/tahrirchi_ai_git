@@ -4,7 +4,12 @@ from aiogram import types
 from aiogram.dispatcher import FSMContext
 
 from data import config
-from db.repositories import AdminRepository, ChannelRepository, StatsRepository
+from db.repositories import (
+    AdminRepository,
+    ChannelRepository,
+    SettingRepository,
+    StatsRepository,
+)
 from keyboards.inline.admin_panel import admin_menu, back_menu, channels_menu
 from keyboards.inline.callbacks import admin_cb, channel_del_cb
 from loader import bot, dp
@@ -27,7 +32,15 @@ async def admin_panel(message: types.Message, admins: AdminRepository, state: FS
 
 
 # ---------- Bekor qilish ----------
-@dp.message_handler(commands=["cancel"], state=[AdminState.waiting_new_admin, AdminState.waiting_channel])
+@dp.message_handler(
+    commands=["cancel"],
+    state=[
+        AdminState.waiting_new_admin,
+        AdminState.waiting_channel,
+        AdminState.waiting_free_tokens,
+        AdminState.waiting_token_price,
+    ],
+)
 async def cancel_admin(message: types.Message, state: FSMContext):
     await state.finish()
     await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu())
@@ -41,6 +54,7 @@ async def admin_actions(
     admins: AdminRepository,
     channels: ChannelRepository,
     stats: StatsRepository,
+    settings: SettingRepository,
     state: FSMContext,
 ):
     if not await admins.is_admin(call.from_user.id):
@@ -59,6 +73,8 @@ async def admin_actions(
 
     elif action == "stats":
         s = await stats.collect()
+        free_tokens = int(await settings.get_value(config.SETTING_FREE_TOKENS, config.FREE_TOKENS))
+        token_price = int(await settings.get_value(config.SETTING_TOKEN_PRICE, config.TOKEN_PRICE))
         text = (
             "📊 <b>Statistika</b>\n\n"
             "👥 <b>Foydalanuvchilar:</b>\n"
@@ -68,6 +84,8 @@ async def admin_actions(
             f"• Jami: <b>{s.users_total}</b>\n\n"
             f"💰 Daromad (tasdiqlangan): <b>{_fmt_som(s.revenue_total)} so'm</b>\n"
             f"🪙 Sotilgan token: <b>{s.tokens_sold}</b>\n\n"
+            f"🎁 Free token (yangi userga): <b>{free_tokens}</b>\n"
+            f"💵 1 token narxi: <b>{_fmt_som(token_price)} so'm</b>\n\n"
             f"🤖 AI xarajati: <b>${s.ai_cost_usd}</b>\n"
         )
         if config.OPENAI_BUDGET_USD > 0:
@@ -75,6 +93,26 @@ async def admin_actions(
         else:
             text += "💵 AI qoldiq: <i>byudjet kiritilmagan (OPENAI_BUDGET_USD)</i>"
         await call.message.edit_text(text, reply_markup=back_menu())
+
+    elif action == "set_free":
+        current = int(await settings.get_value(config.SETTING_FREE_TOKENS, config.FREE_TOKENS))
+        await AdminState.waiting_free_tokens.set()
+        await call.message.edit_text(
+            f"🎁 <b>Free token sozlash</b>\n\n"
+            f"Joriy qiymat: <b>{current}</b> token\n\n"
+            f"Yangi userga beriladigan token sonini (butun son) yuboring.\n\n"
+            f"Bekor qilish: /cancel"
+        )
+
+    elif action == "set_price":
+        current = int(await settings.get_value(config.SETTING_TOKEN_PRICE, config.TOKEN_PRICE))
+        await AdminState.waiting_token_price.set()
+        await call.message.edit_text(
+            f"💵 <b>Token narxi sozlash</b>\n\n"
+            f"Joriy qiymat: <b>{_fmt_som(current)} so'm</b> / 1 token\n\n"
+            f"1 token narxini (so'mda, butun son) yuboring. Masalan: 300\n\n"
+            f"Bekor qilish: /cancel"
+        )
 
     elif action == "broadcast":
         await BroadcastState.text.set()
@@ -202,5 +240,48 @@ async def receive_channel(
     await state.finish()
     await message.answer(
         f"✅ <b>{chat.title}</b> majburiy obunaga qo'shildi.",
+        reply_markup=admin_menu(),
+    )
+
+
+# ---------- Free token sozlash ----------
+@dp.message_handler(state=AdminState.waiting_free_tokens, content_types=types.ContentType.ANY)
+async def receive_free_tokens(
+    message: types.Message, settings: SettingRepository, state: FSMContext
+):
+    text = (message.text or "").strip()
+    if not text.isdigit():
+        await message.answer("❗ Faqat butun son yuboring. Masalan: 30")
+        return
+    value = int(text)
+    if value > 1_000_000:
+        await message.answer("❗ Juda katta son. Kichikroq qiymat yuboring.")
+        return
+    await settings.set_value(config.SETTING_FREE_TOKENS, value)
+    await state.finish()
+    await message.answer(
+        f"✅ Yangi userga beriladigan free token: <b>{value}</b> ta qilib o'rnatildi.",
+        reply_markup=admin_menu(),
+    )
+
+
+# ---------- Token narxi sozlash ----------
+@dp.message_handler(state=AdminState.waiting_token_price, content_types=types.ContentType.ANY)
+async def receive_token_price(
+    message: types.Message, settings: SettingRepository, state: FSMContext
+):
+    text = (message.text or "").strip().replace(" ", "")
+    if not text.isdigit():
+        await message.answer("❗ Faqat butun son yuboring. Masalan: 300")
+        return
+    value = int(text)
+    if value <= 0 or value > 10_000_000:
+        await message.answer("❗ Noto'g'ri narx. 1 dan katta, haqiqiy qiymat yuboring.")
+        return
+    await settings.set_value(config.SETTING_TOKEN_PRICE, value)
+    await state.finish()
+    await message.answer(
+        f"✅ 1 token narxi <b>{_fmt_som(value)} so'm</b> qilib o'rnatildi.\n"
+        f"Paketlar narxi avtomatik yangilanadi (token soni × narx).",
         reply_markup=admin_menu(),
     )

@@ -12,6 +12,24 @@ class SettingRepository:
         row = await self.session.get(Setting, key)
         return row.value if row else 0.0
 
+    async def get_value(self, key: str, default: float) -> float:
+        """Qiymatni o'qiydi; bazada bo'lmasa default qaytaradi."""
+        row = await self.session.get(Setting, key)
+        return row.value if row else default
+
+    async def set_value(self, key: str, value: float) -> None:
+        """Qiymatni o'rnatadi (almashtiradi) — UPSERT."""
+        stmt = (
+            insert(Setting)
+            .values(key=key, value=value)
+            .on_conflict_do_update(
+                index_elements=[Setting.key],
+                set_={"value": value},
+            )
+        )
+        await self.session.execute(stmt)
+        await self.session.commit()
+
     async def increment(self, key: str, amount: float) -> None:
         """Atomik oshirish (UPSERT)."""
         stmt = (

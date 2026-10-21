@@ -1,6 +1,7 @@
 from aiogram import types
 
-from db.repositories import UserRepository
+from data import config
+from db.repositories import SettingRepository, UserRepository
 from keyboards.default import (
     BTN_BALANCE,
     BTN_BUY,
@@ -34,8 +35,11 @@ async def show_balance(message: types.Message, users: UserRepository):
 
 
 @dp.message_handler(text=BTN_BUY, state="*")
-async def show_packages(message: types.Message):
+async def show_packages(message: types.Message, settings: SettingRepository):
+    token_price = int(
+        await settings.get_value(config.SETTING_TOKEN_PRICE, config.TOKEN_PRICE)
+    )
     await message.answer(
-        "🛒 <b>Token paketini tanlang:</b>\n\n1 token = 500 so'm",
-        reply_markup=packages_keyboard(),
+        f"🛒 <b>Token paketini tanlang:</b>\n\n1 token = {token_price:,} so'm".replace(",", " "),
+        reply_markup=packages_keyboard(token_price),
     )

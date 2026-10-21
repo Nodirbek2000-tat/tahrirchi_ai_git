@@ -14,13 +14,19 @@ class UserRepository:
         return await self.session.get(User, user_id)
 
     async def get_or_create(
-        self, user_id: int, full_name: str, username: str | None
+        self,
+        user_id: int,
+        full_name: str,
+        username: str | None,
+        free_tokens: int | None = None,
     ) -> tuple[User, bool]:
         user = await self.session.get(User, user_id)
         if user:
             return user, False
 
         user = User(id=user_id, full_name=full_name, username=username)
+        if free_tokens is not None:
+            user.tokens = free_tokens  # admin paneldagi joriy qiymat
         self.session.add(user)
         await self.session.commit()
         return user, True

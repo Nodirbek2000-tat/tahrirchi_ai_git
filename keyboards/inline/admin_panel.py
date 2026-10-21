@@ -8,6 +8,8 @@ def admin_menu() -> InlineKeyboardMarkup:
     kb.add(
         InlineKeyboardButton("📊 Statistika", callback_data=admin_cb.new(action="stats")),
         InlineKeyboardButton("📣 Reklama yuborish", callback_data=admin_cb.new(action="broadcast")),
+        InlineKeyboardButton("🎁 Free token sozlash", callback_data=admin_cb.new(action="set_free")),
+        InlineKeyboardButton("💵 Token narxi", callback_data=admin_cb.new(action="set_price")),
         InlineKeyboardButton("➕ Admin qo'shish", callback_data=admin_cb.new(action="add_admin")),
         InlineKeyboardButton("📢 Majburiy obuna kanallari", callback_data=admin_cb.new(action="channels")),
         InlineKeyboardButton("❌ Yopish", callback_data=admin_cb.new(action="close")),

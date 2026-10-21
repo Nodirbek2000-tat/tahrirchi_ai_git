@@ -40,16 +40,22 @@ CARD_NUMBER = env.str("CARD_NUMBER", "9860 1701 0951 8093")
 CARD_HOLDER = env.str("CARD_HOLDER", "Nodirbek Shukurov")
 
 # --- Biznes qoidalar ---
-FREE_TOKENS = 30           # yangi userga beriladigan tekin token
-TOKEN_PRICE = 500          # 1 token narxi (so'm)
+# FREE_TOKENS va TOKEN_PRICE — DASTLABKI (default) qiymatlar.
+# Admin panel ularni bazada (settings jadvalida) o'zgartiradi.
+FREE_TOKENS = 30           # yangi userga beriladigan tekin token (default)
+TOKEN_PRICE = 500          # 1 token narxi so'mda (default)
 CHARS_PER_PAGE = 1800      # docx/txt/pdf: shuncha belgi = 1 sahifa (1 token)
 ROWS_PER_TOKEN = 30        # xlsx: har shuncha qatorga 1 token
 MAX_TOKENS_PER_FILE = 300      # harflarga o'girish: maksimal sahifa/token
 MAX_TRANSLATE_TOKENS = 200     # tarjima: maksimal sahifa/token
 
-# Token paketlari: (token soni, narx so'mda)  — 1 token = 500 so'm
-TOKEN_PACKAGES = {
-    "pkg_20": (20, 10_000),
-    "pkg_40": (40, 20_000),
-    "pkg_60": (60, 30_000),
+# Token paketlaridagi token sonlari. Narx = token soni × TOKEN_PRICE (bazadan olinadi).
+PACKAGE_TOKENS = {
+    "pkg_20": 20,
+    "pkg_40": 40,
+    "pkg_60": 60,
 }
+
+# Bazadagi sozlama kalitlari (admin paneldan o'zgartiriladi)
+SETTING_FREE_TOKENS = "free_tokens"
+SETTING_TOKEN_PRICE = "token_price"

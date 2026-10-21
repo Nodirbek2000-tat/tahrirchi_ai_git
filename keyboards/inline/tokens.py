@@ -4,9 +4,10 @@ from data import config
 from keyboards.inline.callbacks import buy_cb, receipt_cb
 
 
-def packages_keyboard() -> InlineKeyboardMarkup:
+def packages_keyboard(token_price: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
-    for package, (tokens, amount) in config.TOKEN_PACKAGES.items():
+    for package, tokens in config.PACKAGE_TOKENS.items():
+        amount = tokens * token_price
         kb.add(
             InlineKeyboardButton(
                 text=f"{tokens} token — {amount:,} so'm".replace(",", " "),
