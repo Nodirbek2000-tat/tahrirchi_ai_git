@@ -15,3 +15,5 @@ channel_del_cb = CallbackData("chdel", "id")       # majburiy obuna kanalini o'c
 translate_lang_cb = CallbackData("trlang", "lang")  # lang: ru|uz|en|cancel
 # Broadcast (reklama)
 broadcast_cb = CallbackData("bc", "action")         # action: send|cancel
+# Free token oshirilganda eski userlarga sovg'a
+free_gift_cb = CallbackData("fgift", "action")      # action: all|new|cancel

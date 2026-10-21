@@ -31,6 +31,19 @@ async def _send_one(bot, user_id, text, photo, markup, retries=1) -> bool:
         return False
 
 
+async def run_personal(bot, messages: list[tuple[int, str]]) -> tuple[int, int]:
+    """Har bir userga o'z matnini yuboradi (masalan, sovg'a + shaxsiy balans)."""
+    sent = 0
+    failed = 0
+    for user_id, text in messages:
+        if await _send_one(bot, user_id, text, None, None):
+            sent += 1
+        else:
+            failed += 1
+        await asyncio.sleep(_DELAY)
+    return sent, failed
+
+
 async def run_broadcast(
     bot, user_ids: list[int], text: str, photo: str | None,
     btn_name: str | None, btn_url: str | None,

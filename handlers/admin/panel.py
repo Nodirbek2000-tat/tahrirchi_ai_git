@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from aiogram import types
@@ -9,10 +10,17 @@ from db.repositories import (
     ChannelRepository,
     SettingRepository,
     StatsRepository,
+    UserRepository,
 )
-from keyboards.inline.admin_panel import admin_menu, back_menu, channels_menu
-from keyboards.inline.callbacks import admin_cb, channel_del_cb
+from keyboards.inline.admin_panel import (
+    admin_menu,
+    back_menu,
+    channels_menu,
+    free_gift_keyboard,
+)
+from keyboards.inline.callbacks import admin_cb, channel_del_cb, free_gift_cb
 from loader import bot, dp
+from services.broadcast import run_personal
 from states import AdminState, BroadcastState
 
 logger = logging.getLogger(__name__)
@@ -38,6 +46,7 @@ async def admin_panel(message: types.Message, admins: AdminRepository, state: FS
         AdminState.waiting_new_admin,
         AdminState.waiting_channel,
         AdminState.waiting_free_tokens,
+        AdminState.confirm_free_gift,
         AdminState.waiting_token_price,
     ],
 )
@@ -101,6 +110,8 @@ async def admin_actions(
             f"🎁 <b>Free token sozlash</b>\n\n"
             f"Joriy qiymat: <b>{current}</b> token\n\n"
             f"Yangi userga beriladigan token sonini (butun son) yuboring.\n\n"
+            f"ℹ️ Yangi qiymat ko'proq bo'lsa, eski userlarga farqini sovg'a qilish "
+            f"taklif qilinadi. Kamaytirilsa, eski userlardan token olinmaydi.\n\n"
             f"Bekor qilish: /cancel"
         )
 
@@ -247,7 +258,10 @@ async def receive_channel(
 # ---------- Free token sozlash ----------
 @dp.message_handler(state=AdminState.waiting_free_tokens, content_types=types.ContentType.ANY)
 async def receive_free_tokens(
-    message: types.Message, settings: SettingRepository, state: FSMContext
+    message: types.Message,
+    users: UserRepository,
+    settings: SettingRepository,
+    state: FSMContext,
 ):
     text = (message.text or "").strip()
     if not text.isdigit():
@@ -257,12 +271,106 @@ async def receive_free_tokens(
     if value > 1_000_000:
         await message.answer("❗ Juda katta son. Kichikroq qiymat yuboring.")
         return
-    await settings.set_value(config.SETTING_FREE_TOKENS, value)
-    await state.finish()
+
+    old = int(await settings.get_value(config.SETTING_FREE_TOKENS, config.FREE_TOKENS))
+
+    # Kamaytirilsa yoki o'zgarmasa — faqat yangi userlarga ta'sir qiladi
+    if value <= old:
+        await settings.set_value(config.SETTING_FREE_TOKENS, value)
+        await state.finish()
+        note = (
+            "Eski userlardan token olinmaydi — bu faqat yangi userlarga ta'sir qiladi."
+            if value < old else "Qiymat o'zgarmadi."
+        )
+        await message.answer(
+            f"✅ Free token: <b>{old}</b> → <b>{value}</b>\n{note}",
+            reply_markup=admin_menu(),
+        )
+        return
+
+    # Oshirilsa — eski userlarga farqini sovg'a qilishni taklif qilamiz
+    diff = value - old
+    total = await users.count()
+    await state.update_data(free_old=old, free_new=value)
+    await AdminState.confirm_free_gift.set()
     await message.answer(
-        f"✅ Yangi userga beriladigan free token: <b>{value}</b> ta qilib o'rnatildi.",
-        reply_markup=admin_menu(),
+        f"🎁 Free token: <b>{old}</b> → <b>{value}</b>\n\n"
+        f"Botda <b>{_fmt_som(total)}</b> ta eski user bor.\n"
+        f"Ularning har biriga <b>+{diff} token</b> sovg'a qilinsinmi?\n\n"
+        f"Har biriga xabar boradi: «Sizga admin tomonidan {diff} ta token sovg'a "
+        f"qilindi» va joriy balansi.",
+        reply_markup=free_gift_keyboard(diff),
     )
+
+
+@dp.callback_query_handler(free_gift_cb.filter(), state=AdminState.confirm_free_gift)
+async def confirm_free_gift(
+    call: types.CallbackQuery,
+    callback_data: dict,
+    admins: AdminRepository,
+    users: UserRepository,
+    settings: SettingRepository,
+    state: FSMContext,
+):
+    if not await admins.is_admin(call.from_user.id):
+        await call.answer("⛔ Ruxsat yo'q.", show_alert=True)
+        return
+
+    data = await state.get_data()
+    old, new = data.get("free_old"), data.get("free_new")
+    action = callback_data["action"]
+    await state.finish()
+    await call.answer()
+
+    if action == "cancel" or new is None:
+        await call.message.edit_text(
+            "❌ Bekor qilindi. Free token o'zgarmadi.", reply_markup=admin_menu()
+        )
+        return
+
+    if action == "new":
+        await settings.set_value(config.SETTING_FREE_TOKENS, new)
+        await call.message.edit_text(
+            f"✅ Free token: <b>{old}</b> → <b>{new}</b>\nFaqat yangi userlarga ta'sir qiladi.",
+            reply_markup=admin_menu(),
+        )
+        return
+
+    # action == "all": eski userlarga farqini sovg'a qilish
+    diff = new - old
+    updated = await users.add_tokens_all(diff)
+    await settings.set_value(config.SETTING_FREE_TOKENS, new)
+    balances = await users.balances()
+
+    await call.message.edit_text(
+        f"✅ Free token: <b>{old}</b> → <b>{new}</b>\n"
+        f"🎁 <b>{_fmt_som(updated)}</b> ta userga <b>+{diff}</b> token qo'shildi.\n"
+        f"📤 Xabarlar yuborilmoqda... Yakunda hisobot keladi."
+    )
+
+    messages = [
+        (
+            user_id,
+            f"🎁 Sizga admin tomonidan <b>{diff} ta token</b> sovg'a qilindi!\n"
+            f"💰 Balansingiz: <b>{tokens}</b> token.",
+        )
+        for user_id, tokens in balances
+    ]
+    admin_id = call.from_user.id
+
+    async def job():
+        sent, failed = await run_personal(bot, messages)
+        try:
+            await bot.send_message(
+                admin_id,
+                f"✅ Sovg'a xabarlari yakunlandi.\n📤 Yuborildi: <b>{sent}</b>\n"
+                f"❌ Yuborilmadi (botni bloklaganlar): <b>{failed}</b>",
+                reply_markup=admin_menu(),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    asyncio.create_task(job())
 
 
 # ---------- Token narxi sozlash ----------

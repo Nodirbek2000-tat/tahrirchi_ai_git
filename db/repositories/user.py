@@ -52,6 +52,19 @@ class UserRepository:
         result = await self.session.execute(select(func.count(User.id)))
         return int(result.scalar_one())
 
+    async def add_tokens_all(self, amount: int) -> int:
+        """Barcha userlarga token qo'shadi (bitta SQL so'rov). Nechta userga qo'shilganini qaytaradi."""
+        result = await self.session.execute(
+            update(User).values(tokens=User.tokens + amount)
+        )
+        await self.session.commit()
+        return result.rowcount or 0
+
+    async def balances(self) -> list[tuple[int, int]]:
+        """Barcha userlarning (id, token) ro'yxati."""
+        result = await self.session.execute(select(User.id, User.tokens))
+        return [(row[0], row[1]) for row in result.all()]
+
     async def all_ids(self) -> list[int]:
         result = await self.session.execute(
             select(User.id).where(User.is_blocked == False)  # noqa: E712

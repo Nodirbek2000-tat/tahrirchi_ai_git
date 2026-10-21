@@ -1,6 +1,19 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from keyboards.inline.callbacks import admin_cb, channel_del_cb
+from keyboards.inline.callbacks import admin_cb, channel_del_cb, free_gift_cb
+
+
+def free_gift_keyboard(diff: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        InlineKeyboardButton(
+            f"✅ Eski userlarga +{diff} token sovg'a qilish",
+            callback_data=free_gift_cb.new(action="all"),
+        ),
+        InlineKeyboardButton("🆕 Faqat yangi userlarga", callback_data=free_gift_cb.new(action="new")),
+        InlineKeyboardButton("❌ Bekor qilish", callback_data=free_gift_cb.new(action="cancel")),
+    )
+    return kb
 
 
 def admin_menu() -> InlineKeyboardMarkup:

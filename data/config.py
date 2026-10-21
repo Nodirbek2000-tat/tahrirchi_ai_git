@@ -54,6 +54,8 @@ PACKAGE_TOKENS = {
     "pkg_20": 20,
     "pkg_40": 40,
     "pkg_60": 60,
+    "pkg_80": 80,
+    "pkg_100": 100,
 }
 
 # Bazadagi sozlama kalitlari (admin paneldan o'zgartiriladi)
