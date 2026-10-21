@@ -17,3 +17,5 @@ translate_lang_cb = CallbackData("trlang", "lang")  # lang: ru|uz|en|cancel
 broadcast_cb = CallbackData("bc", "action")         # action: send|cancel
 # Free token oshirilganda eski userlarga sovg'a
 free_gift_cb = CallbackData("fgift", "action")      # action: all|new|cancel
+# Kirill <-> Lotin yo'nalishi
+script_cb = CallbackData("scr", "dir")              # dir: cyr2lat|cyr2new|lat2cyr|cancel

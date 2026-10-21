@@ -3,6 +3,7 @@ from . import start
 from . import menu
 from . import subscription
 from . import translate
+from . import script
 from . import tokens
 from . import process
 from . import fallback  # eng oxirida — barcha qolgan xabarlarni ushlaydi

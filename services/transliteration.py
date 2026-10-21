@@ -34,14 +34,19 @@ _MAP = {
 }
 
 
+def protected_spans(text: str) -> list[tuple[int, int]]:
+    """Tegilmaydigan joylar: havolalar (https://, www.) va emaillar."""
+    if "@" in text or "://" in text or "www." in text:
+        return [(m.start(), m.end()) for m in _PROTECTED_RE.finditer(text)]
+    return []
+
+
 def iter_matches(text: str) -> Iterator[tuple[int, str, str]]:
     """Matndagi har bir o'giriladigan juftlik: (boshlanish, turi, yangi harf).
 
     Har bir moslik aynan 2 belgi: harf + (h yoki tutuq).
     """
-    protected = None
-    if "@" in text or "://" in text or "www." in text:
-        protected = [(m.start(), m.end()) for m in _PROTECTED_RE.finditer(text)]
+    protected = protected_spans(text)
     for m in _DIGRAPH_RE.finditer(text):
         start = m.start()
         if protected and any(a <= start < b for a, b in protected):
