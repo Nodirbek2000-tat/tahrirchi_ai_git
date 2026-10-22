@@ -19,3 +19,5 @@ free_gift_cb = CallbackData("fgift", "action")      # action: all|new|cancel
 script_cb = CallbackData("scr", "dir")              # dir: cyr2lat|cyr2new|lat2cyr|cancel
 # Imlo tuzatish: boshlash / bekor qilish
 spell_cb = CallbackData("spell", "action")          # action: start|cancel
+# Matnni o'girish: boshqa yozuvda ko'rsatish
+text_cb = CallbackData("txt", "to")                 # to: new|old|cyr

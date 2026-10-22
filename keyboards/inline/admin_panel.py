@@ -24,6 +24,7 @@ def admin_menu() -> InlineKeyboardMarkup:
         InlineKeyboardButton("🎁 Bepul fayllar soni", callback_data=admin_cb.new(action="set_free")),
         InlineKeyboardButton("💎 Premium narxi", callback_data=admin_cb.new(action="set_price")),
         InlineKeyboardButton("👑 Premium berish", callback_data=admin_cb.new(action="give_premium")),
+        InlineKeyboardButton("📄 Userga bepul fayl", callback_data=admin_cb.new(action="give_files")),
         InlineKeyboardButton("➕ Admin qo'shish", callback_data=admin_cb.new(action="add_admin")),
         InlineKeyboardButton("📢 Majburiy obuna kanallari", callback_data=admin_cb.new(action="channels")),
         InlineKeyboardButton("❌ Yopish", callback_data=admin_cb.new(action="close")),

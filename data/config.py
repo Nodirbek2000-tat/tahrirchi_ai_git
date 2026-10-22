@@ -44,6 +44,7 @@ CARD_HOLDER = env.str("CARD_HOLDER", "Nodirbek Shukurov")
 # tahrirlaydi. FREE_FILES va PREMIUM_PRICE — DASTLABKI (default) qiymatlar,
 # admin panel ularni bazada (settings jadvalida) o'zgartiradi.
 FREE_FILES = 2             # yangi userga beriladigan bepul fayllar soni (default)
+FREE_TEXTS = 20            # matnni o'girish: bepul urinishlar soni (premiumda cheksiz)
 PREMIUM_PRICE = 20_000     # premium narxi so'mda (default)
 PREMIUM_DAYS = 30          # bitta to'lov necha kunlik premium beradi
 PREMIUM_PACKAGE = "premium_30"

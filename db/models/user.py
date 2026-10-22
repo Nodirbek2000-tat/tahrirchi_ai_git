@@ -14,6 +14,7 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(255))
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     free_files: Mapped[int] = mapped_column(Integer, default=config.FREE_FILES)
+    free_texts: Mapped[int] = mapped_column(Integer, default=config.FREE_TEXTS)
     premium_until: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

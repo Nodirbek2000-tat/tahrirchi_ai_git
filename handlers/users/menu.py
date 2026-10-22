@@ -42,8 +42,12 @@ async def show_account(
     elif user and user.is_premium:
         status = f"💎 Premium faol — <b>{fmt_date(user.premium_until)}</b> gacha.\nHamma imkoniyatlar cheksiz."
     else:
-        left = user.free_files if user else 0
-        status = f"🎁 Bepul fayllar: <b>{left}</b> ta qoldi."
+        files = user.free_files if user else 0
+        texts = user.free_texts if user else 0
+        status = (
+            f"🎁 Bepul fayllar: <b>{files}</b> ta qoldi.\n"
+            f"💬 Matnni o'girish: <b>{texts}</b> ta bepul urinish qoldi."
+        )
     text = f"👤 <b>Hisobim</b>\n\n{status}"
     markup = None
     if not (user and user.is_premium):

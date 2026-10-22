@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 
 from aiogram import types
@@ -50,6 +51,7 @@ async def admin_panel(message: types.Message, admins: AdminRepository, state: FS
         AdminState.confirm_free_gift,
         AdminState.waiting_premium_price,
         AdminState.waiting_premium_user,
+        AdminState.waiting_user_files,
     ],
 )
 async def cancel_admin(message: types.Message, state: FSMContext):
@@ -133,9 +135,19 @@ async def admin_actions(
         await AdminState.waiting_premium_user.set()
         await call.message.edit_text(
             "👑 <b>Premium berish</b>\n\n"
-            "Userning <b>Telegram ID</b> raqamini va kun sonini yuboring.\n"
-            f"Masalan: <code>123456789 {config.PREMIUM_DAYS}</code>\n"
+            "Userning <b>Telegram ID</b> raqami yoki <b>@username</b>i va kun sonini yuboring.\n"
+            f"Masalan: <code>123456789 {config.PREMIUM_DAYS}</code> yoki "
+            f"<code>@username {config.PREMIUM_DAYS}</code>\n"
             f"(kun yozilmasa — {config.PREMIUM_DAYS} kun)\n\n"
+            "Bekor qilish: /cancel"
+        )
+
+    elif action == "give_files":
+        await AdminState.waiting_user_files.set()
+        await call.message.edit_text(
+            "📄 <b>Userga bepul fayl berish</b> (premiumsiz)\n\n"
+            "Userning <b>Telegram ID</b> raqami yoki <b>@username</b>i va fayllar sonini yuboring.\n"
+            "Masalan: <code>123456789 5</code> yoki <code>@username 5</code>\n\n"
             "Bekor qilish: /cancel"
         )
 
@@ -415,17 +427,18 @@ async def receive_premium_user(
     message: types.Message, users: UserRepository, state: FSMContext
 ):
     parts = (message.text or "").split()
-    if not parts or not parts[0].isdigit() or (len(parts) > 1 and not parts[1].isdigit()):
+    if not parts or (len(parts) > 1 and not parts[1].isdigit()):
         await message.answer(f"❗ Masalan: <code>123456789 {config.PREMIUM_DAYS}</code>")
         return
-    user_id = int(parts[0])
     days = int(parts[1]) if len(parts) > 1 else config.PREMIUM_DAYS
     if not 1 <= days <= 3650:
         await message.answer("❗ Kun soni 1 dan 3650 gacha bo'lsin.")
         return
-    if await users.get(user_id) is None:
-        await message.answer("❗ Bu ID bilan user topilmadi (u botga /start bosmagan).")
+    user = await users.find(parts[0])
+    if user is None:
+        await message.answer(f"❌ <code>{html.escape(parts[0])}</code> — bazada yo'q.")
         return
+    user_id = user.id
     until = await users.extend_premium(user_id, days)
     await state.finish()
     await message.answer(
@@ -441,5 +454,44 @@ async def receive_premium_user(
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Premium xabari yuborilmadi: %s", exc)
+
+
+# ---------- Bitta userga bepul fayl berish ----------
+@dp.message_handler(state=AdminState.waiting_user_files, content_types=types.ContentType.ANY)
+async def receive_user_files(
+    message: types.Message, users: UserRepository, state: FSMContext
+):
+    parts = (message.text or "").split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer("❗ Masalan: <code>123456789 5</code> yoki <code>@username 5</code>")
+        return
+    amount = int(parts[1])
+    if not 1 <= amount <= 10_000:
+        await message.answer("❗ Fayllar soni 1 dan 10 000 gacha bo'lsin.")
+        return
+    user = await users.find(parts[0])
+    if user is None:
+        await message.answer(
+            f"❌ <code>{html.escape(parts[0])}</code> — bazada yo'q.\n"
+            "(User botga /start bosgan bo'lishi kerak.) Qayta yuboring yoki /cancel"
+        )
+        return
+    total = await users.add_free_files(user.id, amount)
+    await state.finish()
+    name = html.escape(user.full_name or "")
+    username = f" (@{html.escape(user.username)})" if user.username else ""
+    await message.answer(
+        f"✅ {name}{username} — <code>{user.id}</code> ga <b>+{amount}</b> bepul fayl berildi.\n"
+        f"📄 Endi bepul fayllari: <b>{total}</b> ta.",
+        reply_markup=admin_menu(),
+    )
+    try:
+        await bot.send_message(
+            user.id,
+            f"🎁 Sizga admin tomonidan <b>{amount} ta bepul fayl</b> tahrirlash imkoniyati berildi!\n"
+            f"📄 Bepul fayllaringiz: <b>{total}</b> ta.",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Bepul fayl xabari yuborilmadi: %s", exc)
 
 

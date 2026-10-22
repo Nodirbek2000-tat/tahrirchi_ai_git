@@ -6,6 +6,7 @@ BTN_PDF = "📕 PDF tahrir"
 BTN_PPTX = "📽 Prezentatsiya tahrir"
 BTN_SPELL = "✍️ Imlo tuzatish"
 BTN_SCRIPT = "🔤 Kirill ↔ Lotin"
+BTN_TEXT = "💬 Matnni o'girish"
 BTN_ACCOUNT = "👤 Hisobim"
 BTN_PREMIUM = "💎 Premium"
 
@@ -16,6 +17,7 @@ main_menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(BTN_WORD), KeyboardButton(BTN_EXCEL)],
         [KeyboardButton(BTN_PDF), KeyboardButton(BTN_PPTX)],
+        [KeyboardButton(BTN_TEXT)],
         [KeyboardButton(BTN_SPELL), KeyboardButton(BTN_SCRIPT)],
         [KeyboardButton(BTN_ACCOUNT), KeyboardButton(BTN_PREMIUM)],
     ],

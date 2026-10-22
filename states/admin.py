@@ -8,3 +8,4 @@ class AdminState(StatesGroup):
     confirm_free_gift = State()      # oshirilganda eski userlarga sovg'ani tasdiqlash
     waiting_premium_price = State()  # premium narxi (so'm)
     waiting_premium_user = State()   # qo'lda premium berish: "ID [kun]"
+    waiting_user_files = State()     # bitta userga bepul fayl: "ID/@username soni"

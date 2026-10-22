@@ -12,7 +12,8 @@ WELCOME = (
     "Men <b>Tahrirchi AI</b> — hujjatlaringizni tahrirlayman:\n\n"
     "🔤 <b>Yangi alifbo:</b> sh→ş, ch→ç, gʻ→ğ, oʻ→ö\n"
     "✍️ <b>Imlo:</b> tinish belgilari, katta harflar, imlo xatolari\n"
-    "🔁 <b>Kirill ↔ Lotin:</b> yozuvni almashtirish\n\n"
+    "🔁 <b>Kirill ↔ Lotin:</b> yozuvni almashtirish\n"
+    "💬 <b>Matnni o'girish:</b> matn yuboring — darhol yangi alifboda qaytaraman\n\n"
     "📎 Word, Excel, PowerPoint, PDF, TXT fayllar.\n"
     "Shrift, rang, rasm va dizayn <b>o'zgarmaydi</b>.\n\n"
     "👇 Quyidagi tugmalardan birini tanlang:"
@@ -36,5 +37,8 @@ async def bot_start(
     )
     text = WELCOME.format(name=message.from_user.full_name)
     if created and free_files:
-        text += f"\n\n🎁 Sizga <b>{free_files} ta faylni bepul</b> tahrirlash imkoniyati berildi!"
+        text += (
+            f"\n\n🎁 Sizga <b>{free_files} ta faylni bepul</b> tahrirlash va "
+            f"<b>{user.free_texts} ta matnni bepul</b> o'girish imkoniyati berildi!"
+        )
     await message.answer(text, reply_markup=main_menu)

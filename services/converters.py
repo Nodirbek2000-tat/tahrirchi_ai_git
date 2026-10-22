@@ -263,6 +263,34 @@ class LatToCyrConverter(Converter):
         return out
 
 
+# ============================================================ Yangi lotin -> eski lotin
+_NEW_TO_OLD = {"ş": "sh", "ç": "ch", "ğ": "gʻ", "ö": "oʻ"}
+
+
+class NewToOldConverter(Converter):
+    """Yangi alifbo (ş, ç, ğ, ö) -> eski lotin (sh, ch, gʻ, oʻ).
+
+    Yangi alifbodagi "sh" — alohida s va h (Işoq emas, Ishoq = Isʼhoq), eski
+    alifboda tutuq bilan ajratiladi: sʼh.
+    """
+
+    def edits(self, text: str, context: str | None = None) -> list[Edit]:
+        if _NEW_LETTERS.isdisjoint(text):
+            return []
+        spans = protected_spans(text)
+        out: list[Edit] = []
+        for i, ch in enumerate(text):
+            if spans and _inside(i, spans):
+                continue
+            low = ch.lower()
+            if low in _NEW_TO_OLD:
+                rep = _apply_case(_NEW_TO_OLD[low], ch.isupper(), _all_caps(text, i, i + 1))
+                out.append((i, i + 1, rep, "yangi"))
+            elif low == "s" and i + 1 < len(text) and text[i + 1].lower() == "h":
+                out.append((i, i + 1, ch + "ʼ", "yangi"))
+        return out
+
+
 # ============================================================ Yozuv tarkibi (sanash)
 class ScriptStats(Converter):
     """Hech narsani o'zgartirmaydi — yozuv va til tarkibini sanaydi.
