@@ -23,6 +23,7 @@ from services.files import (
     UnsupportedFileError,
     get_processor,
 )
+from services.files.pdf_inplace import UnreadablePdfError
 from services.files.translit_engine import TranslitReport, scan_file, transliterate_file
 from services.transliteration import KINDS
 from states import ProcessFileState
@@ -115,13 +116,16 @@ async def receive_file(
         )
         return
 
-    # 1-tahlil: faylda nechta o'giriladigan harf bor (PDF avval Word'ga o'girilgach sanaladi)
+    # 1-tahlil: faylda nechta o'giriladigan harf bor
     found = None
-    if ext != ".pdf":
-        try:
-            found = await asyncio.to_thread(scan_file, in_path)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Oldindan skan qilib bo'lmadi: %s", exc)
+    try:
+        found = await asyncio.to_thread(scan_file, in_path)
+    except UnreadablePdfError as exc:
+        _cleanup(in_path)
+        await status_msg.edit_text(f"📄 <b>{file_name}</b>\n\n{exc.user_text}")
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Oldindan skan qilib bo'lmadi: %s", exc)
     if found is not None and not sum(found.values()):
         _cleanup(in_path)
         await status_msg.edit_text(

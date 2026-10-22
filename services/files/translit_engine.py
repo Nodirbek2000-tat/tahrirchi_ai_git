@@ -42,8 +42,7 @@ from dataclasses import dataclass, field
 from lxml import etree
 
 from services.converters import NEW_ALPHABET, Converter
-from services.files.convert import docx_to_pdf, pdf_to_docx
-from services.files.txt_processor import _read as read_text
+from services.files.pdf_inplace import scan_pdf, transliterate_pdf
 from services.transliteration import APOSTROPHES
 
 logger = logging.getLogger(__name__)
@@ -83,6 +82,7 @@ class _Spec:
     syms: frozenset = frozenset()       # w:sym — belgi sifatida qo'yilgan tutuq
     exclude: frozenset = frozenset()    # shu ajdod ichidagi matn olinmaydi
     preserve_space: bool = False        # xml:space="preserve" kerakmi
+    flow: bool = False                  # paragraflar o'qish tartibida (qo'shni kontekst bor)
 
 
 _WORD = _Spec(
@@ -92,8 +92,9 @@ _WORD = _Spec(
               "object", "fldChar", "footnoteReference", "endnoteReference"),
     syms=_q(_W, "sym"),
     preserve_space=True,
+    flow=True,
 )
-_DRAWING = _Spec(text=_q(_A, "t"), groups=_q(_A, "p"), breaks=_q(_A, "br"))
+_DRAWING = _Spec(text=_q(_A, "t"), groups=_q(_A, "p"), breaks=_q(_A, "br"), flow=True)
 _SHEET = _Spec(
     text=_q(_S, "t"),
     groups=_q(_S, "si", "is", "text"),   # shared string / inline string / izoh
@@ -292,51 +293,59 @@ def _replace_sym(el, new: str) -> None:
     parent.replace(el, text_el)
 
 
+def _spec_segments(root, spec: _Spec, conv: Converter):
+    """(bo'laklar, birlashgan matn, kontekst) — hujjat tartibida.
+
+    Kataklar (Excel) bir-biriga bog'liq emas va jadval ustun nomlari bilan bir xil
+    o'girilishi shart — shuning uchun ularga qo'shni kontekst berilmaydi.
+    """
+    segs = [seg for pieces in _build_groups(root, spec).values() for seg in _segments(pieces)]
+    texts = ["".join(_piece_text(p) for p in seg) for seg in segs]
+    ctxs = conv.contexts(texts) if spec.flow else [None] * len(texts)
+    return zip(segs, texts, ctxs)
+
+
 def _scan_text(root, specs, conv: Converter, counter: Counter) -> None:
     for spec in specs:
-        for pieces in _build_groups(root, spec).values():
-            for seg in _segments(pieces):
-                joined = "".join(_piece_text(p) for p in seg)
-                if joined:
-                    counter.update(conv.count(joined))
+        for _, joined, ctx in _spec_segments(root, spec, conv):
+            if joined:
+                counter.update(conv.count(joined, ctx))
 
 
 def _apply_text(root, specs, conv: Converter) -> int:
     changed = 0
     for spec in specs:
-        for pieces in _build_groups(root, spec).values():
-            for seg in _segments(pieces):
-                texts = [_piece_text(p) for p in seg]
-                joined = "".join(texts)
-                if not joined:
-                    continue
-                edits = conv.edits(joined)
-                if not edits:
-                    continue
+        for seg, joined, ctx in _spec_segments(root, spec, conv):
+            if not joined:
+                continue
+            edits = conv.edits(joined, ctx)
+            if not edits:
+                continue
+            texts = [_piece_text(p) for p in seg]
 
-                # Birlashtirilgan matndagi pozitsiya -> (bo'lak, ichki o'rni)
-                owner = []
-                for i, text in enumerate(texts):
-                    owner.extend((i, j) for j in range(len(text)))
-                chars: list[list] = [list(text) for text in texts]
-                for start, end, replacement, _ in edits:
-                    i, j = owner[start]
-                    chars[i][j] = replacement        # yangi matn birinchi belgi o'rnida
-                    for pos in range(start + 1, end):
-                        i, j = owner[pos]
-                        chars[i][j] = None           # qolgan belgilar o'chiriladi
-                changed += len(edits)
+            # Birlashtirilgan matndagi pozitsiya -> (bo'lak, ichki o'rni)
+            owner = []
+            for i, text in enumerate(texts):
+                owner.extend((i, j) for j in range(len(text)))
+            chars: list[list] = [list(text) for text in texts]
+            for start, end, replacement, _ in edits:
+                i, j = owner[start]
+                chars[i][j] = replacement        # yangi matn birinchi belgi o'rnida
+                for pos in range(start + 1, end):
+                    i, j = owner[pos]
+                    chars[i][j] = None           # qolgan belgilar o'chiriladi
+            changed += len(edits)
 
-                for piece, piece_chars, old in zip(seg, chars, texts):
-                    new = "".join(c for c in piece_chars if c is not None)
-                    if new == old:
-                        continue
-                    if piece[0] == "t":
-                        piece[1].text = new
-                        if spec.preserve_space and new != new.strip():
-                            piece[1].set(_XML_SPACE, "preserve")
-                    else:
-                        _replace_sym(piece[1], new)
+            for piece, piece_chars, old in zip(seg, chars, texts):
+                new = "".join(c for c in piece_chars if c is not None)
+                if new == old:
+                    continue
+                if piece[0] == "t":
+                    piece[1].text = new
+                    if spec.preserve_space and new != new.strip():
+                        piece[1].set(_XML_SPACE, "preserve")
+                else:
+                    _replace_sym(piece[1], new)
     return changed
 
 
@@ -643,25 +652,25 @@ def _leftovers(path: str, conv: Converter, limit: int = 10) -> list[str]:
     with zipfile.ZipFile(path) as zin:
         for name, part in _load_parts(zin).items():
             for spec in part.specs:
-                for pieces in _build_groups(part.root, spec).values():
-                    for seg in _segments(pieces):
-                        joined = "".join(_piece_text(p) for p in seg)
-                        for start, _, _, _ in conv.edits(joined):
-                            found.append(f"{name}: …{joined[max(0, start - 15):start + 15]}…")
-                            if len(found) >= limit:
-                                return found
+                for _, joined, ctx in _spec_segments(part.root, spec, conv):
+                    for start, _, _, _ in conv.edits(joined, ctx):
+                        found.append(f"{name}: …{joined[max(0, start - 15):start + 15]}…")
+                        if len(found) >= limit:
+                            return found
     return found
 
 
 # ======================================================================= Ommaviy API
 def scan_file(path: str, conv: Converter = NEW_ALPHABET) -> Counter | None:
-    """Fayldagi o'zgartiriladigan joylar soni (turi bo'yicha). PDF uchun None."""
+    """Fayldagi o'zgartiriladigan joylar soni (turi bo'yicha)."""
     ext = os.path.splitext(path)[1].lower()
     if ext == ".txt":
-        return conv.count(read_text(path))
+        return _txt_count(_read_txt(path), conv)
     if ext in (".docx", ".xlsx", ".pptx"):
         with zipfile.ZipFile(path) as zin:
             return _scan_zip(zin, conv)
+    if ext == ".pdf":
+        return scan_pdf(path, conv)
     return None
 
 
@@ -681,24 +690,51 @@ def _transliterate_ooxml(in_path: str, out_path: str, conv: Converter) -> Transl
     return report
 
 
+def _read_txt(path: str) -> str:
+    """Matn faylini qator oxirlari (\\r\\n / \\n) o'zgarmagan holda o'qish."""
+    with open(path, "rb") as f:
+        data = f.read()
+    for encoding in ("utf-8", "cp1251"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("latin-1")
+
+
+def _txt_count(text: str, conv: Converter) -> Counter:
+    """Matn fayli qatorma-qator (har qator — paragraf, tili alohida aniqlanadi)."""
+    lines = text.split("\n")
+    counter: Counter = Counter()
+    for line, ctx in zip(lines, conv.contexts(lines)):
+        if line:
+            counter.update(conv.count(line, ctx))
+    return counter
+
+
+def _txt_convert(text: str, conv: Converter) -> str:
+    lines = text.split("\n")
+    return "\n".join(conv.convert(line, ctx) for line, ctx in zip(lines, conv.contexts(lines)))
+
+
 def _transliterate_txt(in_path: str, out_path: str, conv: Converter) -> TranslitReport:
     report = TranslitReport()
-    text = read_text(in_path)
-    report.found = conv.count(text)
+    text = _read_txt(in_path)
+    report.found = _txt_count(text, conv)
 
     remaining = report.total_found
     rounds = 0
     while remaining and rounds < _MAX_ROUNDS:
         rounds += 1
-        before = sum(conv.count(text).values())
-        text = conv.convert(text)
-        remaining = sum(conv.count(text).values())
+        before = remaining
+        text = _txt_convert(text, conv)
+        remaining = sum(_txt_count(text, conv).values())
         report.converted += before - remaining
 
-    with open(out_path, "w", encoding="utf-8") as f:
+    with open(out_path, "w", encoding="utf-8", newline="") as f:
         f.write(text)
 
-    report.remaining = sum(conv.count(read_text(out_path)).values())
+    report.remaining = sum(_txt_count(_read_txt(out_path), conv).values())
     report.passes = 1 + rounds + 1
     return report
 
@@ -713,11 +749,10 @@ def transliterate_file(
     if ext in (".docx", ".xlsx", ".pptx"):
         return _transliterate_ooxml(in_path, out_path, conv)
     if ext == ".pdf":
-        workdir = os.path.dirname(out_path) or "."
-        conv_docx = os.path.join(workdir, "_conv.docx")
-        edited_docx = os.path.join(workdir, "_edited.docx")
-        pdf_to_docx(in_path, conv_docx)
-        report = _transliterate_ooxml(conv_docx, edited_docx, conv)
-        docx_to_pdf(edited_docx, out_path)
+        # PDF Word'ga o'tkazilmaydi — asl dizaynida, faqat kerakli so'zlar qayta yoziladi
+        report = TranslitReport()
+        transliterate_pdf(in_path, out_path, conv, report)
+        report.remaining = sum(scan_pdf(out_path, conv).values())
+        report.passes = 2   # skan + saqlangan faylni yakuniy tekshirish
         return report
     raise ValueError(f"Qo'llab-quvvatlanmaydigan fayl: {ext}")

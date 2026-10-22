@@ -22,8 +22,9 @@ from keyboards.inline import packages_keyboard
 from keyboards.inline.callbacks import script_cb
 from keyboards.inline.script import DIRECTION_LABELS, direction_keyboard
 from loader import bot, dp
-from services.converters import CYR_TO_LAT, CYR_TO_NEW, SCRIPT_STATS, LatToCyrConverter
+from services.converters import SCRIPT_STATS, CyrToLatConverter, LatToCyrConverter
 from services.files import SUPPORTED_EXTENSIONS, UnsupportedFileError, get_processor
+from services.files.pdf_inplace import UnreadablePdfError
 from services.files.translit_engine import TranslitReport, scan_file, transliterate_file
 from states import ScriptState
 
@@ -50,23 +51,26 @@ def _num(value: int) -> str:
     return f"{value:,}".replace(",", " ")
 
 
-def _report_text(report: TranslitReport) -> str:
+def _report_text(report: TranslitReport, ru_kept: int = 0) -> str:
+    kept = f"\n🇷🇺 Ruscha matn tegilmadi: <b>{_num(ru_kept)}</b> harf" if ru_kept else ""
     if not report.total_found:
-        return "🔎 O'zgartiriladigan harf topilmadi."
+        return "🔎 O'zgartiriladigan harf topilmadi." + kept
     kind = next(iter(report.found))
     return (
         f"🔎 Topildi: <b>{_num(report.total_found)}</b> ta {_KIND_LABEL.get(kind, 'harf')}\n"
         f"✏️ O'zgartirildi: <b>{_num(report.converted)}</b> ta\n"
-        f"🔁 {report.passes} bosqichda tekshirildi · qolgan: <b>{report.remaining}</b>"
+        f"🔁 {report.passes} bosqichda tekshirildi · qolgan: <b>{report.remaining}</b>" + kept
     )
 
 
-def _converter(direction: str, new_mode: bool | None):
-    if direction == "cyr2lat":
-        return CYR_TO_LAT
-    if direction == "cyr2new":
-        return CYR_TO_NEW
+def _converter(direction: str, new_mode: bool | None, unknown_is_uz: bool):
+    if direction in ("cyr2lat", "cyr2new"):
+        return CyrToLatConverter(new=direction == "cyr2new", unknown_is_uz=unknown_is_uz)
     return LatToCyrConverter(new_mode=new_mode)
+
+
+def _pct(part: int, total: int) -> int:
+    return round(part * 100 / total) if total else 0
 
 
 @dp.message_handler(text=BTN_SCRIPT, state="*")
@@ -108,10 +112,15 @@ async def script_receive_file(
         tg_file = await bot.get_file(document.file_id)
         await bot.download_file(tg_file.file_path, in_path)
         analysis = await asyncio.to_thread(get_processor(file_name).analyze, in_path)
-        stats = None if ext == ".pdf" else await asyncio.to_thread(scan_file, in_path, SCRIPT_STATS)
+        stats = await asyncio.to_thread(scan_file, in_path, SCRIPT_STATS)
     except UnsupportedFileError:
         _cleanup(in_path)
         await status_msg.edit_text(UNSUPPORTED_TEXT)
+        return
+    except UnreadablePdfError as exc:
+        _cleanup(in_path)
+        await state.finish()
+        await status_msg.edit_text(f"📄 <b>{file_name}</b>\n\n{exc.user_text}")
         return
     except Exception as exc:  # noqa: BLE001
         logger.exception("Faylni o'qishda xato: %s", exc)
@@ -128,27 +137,39 @@ async def script_receive_file(
         )
         return
 
-    # Yozuv tarkibi va mos yo'nalishlar
-    if stats is not None:
-        cyr, lat = stats.get("kirill", 0), stats.get("lotin", 0)
-        if not cyr and not lat:
-            _cleanup(in_path)
-            await state.finish()
-            await status_msg.edit_text(
-                f"📄 <b>{file_name}</b>\n\n🔎 Faylda harf topilmadi. 🪙 Token yechilmadi."
-            )
-            return
-        total = cyr + lat
-        cyr_pct = round(cyr * 100 / total)
-        composition = f"🔤 Yozuv: Kirill <b>{cyr_pct}%</b> · Lotin <b>{100 - cyr_pct}%</b>"
-        cyr_dirs = ["cyr2lat", "cyr2new"] if cyr else []
-        lat_dirs = ["lat2cyr"] if lat else []
-        directions = cyr_dirs + lat_dirs if cyr >= lat else lat_dirs + cyr_dirs
-        new_mode = stats.get("yangi", 0) > stats.get("eski", 0)
-    else:
-        composition = "🔤 Yozuv PDF Word'ga o'girilgach aniqlanadi"
-        directions = ["cyr2lat", "cyr2new", "lat2cyr"]
-        new_mode = None
+    # Yozuv va til tarkibi. Har paragrafning tili alohida aniqlanadi; aniqlanmagan qisqa
+    # paragraflar (nomlar, raqamli kataklar) hujjatdagi ko'pchilik tiliga qo'shiladi.
+    uz, ru, unk = (stats.get(k, 0) for k in ("kirill_uz", "kirill_ru", "kirill_unk"))
+    lat = stats.get("lotin", 0)
+    unknown_is_uz = uz >= ru
+    uz_cyr, ru_cyr = (uz + unk, ru) if unknown_is_uz else (uz, ru + unk)
+    total = uz_cyr + ru_cyr + lat
+    fully_russian = not uz_cyr and ru_cyr >= lat
+    if not total or fully_russian:
+        _cleanup(in_path)
+        await state.finish()
+        reason = (
+            "🇷🇺 Fayl to'liq <b>rus tilida</b> — o'zbekcha matn topilmadi.\n"
+            "Rus tilidagi matn lotinga o'girilmaydi (bu tarjima emas)."
+            if fully_russian and total else "🔎 Faylda harf topilmadi."
+        )
+        await status_msg.edit_text(f"📄 <b>{file_name}</b>\n\n{reason}\n🪙 Token yechilmadi.")
+        return
+
+    parts = []
+    if uz_cyr:
+        parts.append(f"Kirill (o'zbekcha) <b>{_pct(uz_cyr, total)}%</b>")
+    if ru_cyr:
+        parts.append(f"Kirill (ruscha) <b>{_pct(ru_cyr, total)}%</b>")
+    if lat:
+        parts.append(f"Lotin <b>{_pct(lat, total)}%</b>")
+    composition = "🔤 Yozuv: " + " · ".join(parts)
+    if ru_cyr:
+        composition += "\nℹ️ Ruscha qismlar o'zgarmaydi — faqat o'zbekcha matn o'giriladi."
+    cyr_dirs = ["cyr2lat", "cyr2new"] if uz_cyr else []
+    lat_dirs = ["lat2cyr"] if lat else []
+    directions = cyr_dirs + lat_dirs if uz_cyr >= lat else lat_dirs + cyr_dirs
+    new_mode = stats.get("yangi", 0) > stats.get("eski", 0)
 
     is_admin = await admins.is_admin(message.from_user.id)
     user = await users.get(message.from_user.id)
@@ -174,7 +195,7 @@ async def script_receive_file(
     await ScriptState.choosing_direction.set()
     await state.update_data(
         file_path=in_path, file_name=file_name, token_cost=cost,
-        is_admin=is_admin, new_mode=new_mode,
+        is_admin=is_admin, new_mode=new_mode, unknown_is_uz=unknown_is_uz, ru_kept=ru_cyr,
     )
     price_line = (
         "👑 Admin — <b>bepul</b>.\n\n" if is_admin
@@ -230,7 +251,8 @@ async def script_convert(
     task = await tasks.create(call.from_user.id, f"[{direction}] {file_name}", ext, cost)
     out_name = _OUT_PREFIX[direction] + file_name
     out_path = os.path.join(os.path.dirname(file_path), out_name)
-    conv = _converter(direction, data.get("new_mode"))
+    conv = _converter(direction, data.get("new_mode"), data.get("unknown_is_uz", True))
+    ru_kept = data.get("ru_kept", 0) if direction in ("cyr2lat", "cyr2new") else 0
 
     await call.message.edit_text(
         f"⏳ <b>{DIRECTION_LABELS[direction]}</b> — o'girilmoqda va qayta tekshirilmoqda..."
@@ -239,7 +261,7 @@ async def script_convert(
         report = await asyncio.to_thread(transliterate_file, file_path, out_path, conv)
         await tasks.set_status(task.id, TaskStatus.DONE)
 
-        summary = _report_text(report)
+        summary = _report_text(report, ru_kept)
         if is_admin:
             caption = f"✅ Tayyor! {DIRECTION_LABELS[direction]}\n\n{summary}\n\n👑 Admin — bepul."
         else:

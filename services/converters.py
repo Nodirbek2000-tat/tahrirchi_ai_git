@@ -15,6 +15,7 @@ Konverterlar:
 import re
 from collections import Counter
 
+from services.language import classify_cyrillic, neighbor_contexts
 from services.transliteration import (
     APOSTROPHES,
     count_matches,
@@ -52,18 +53,25 @@ def _apply_case(rep: str, upper: bool, all_caps: bool) -> str:
 
 
 class Converter:
-    def edits(self, text: str) -> list[Edit]:
+    """context — qaror qaysi matnga qarab qabul qilinishi (masalan PDF blok matni yoki
+    tili aniqlanmagan sarlavha uchun qo'shni paragraf). None — bo'lakning o'zi."""
+
+    def contexts(self, texts: list[str]) -> list[str | None]:
+        """Hujjat tartibidagi paragraflar uchun kontekstlar (til hisobga olinmasa — None)."""
+        return [None] * len(texts)
+
+    def edits(self, text: str, context: str | None = None) -> list[Edit]:
         raise NotImplementedError
 
-    def count(self, text: str) -> Counter:
-        return Counter(edit[3] for edit in self.edits(text))
+    def count(self, text: str, context: str | None = None) -> Counter:
+        return Counter(edit[3] for edit in self.edits(text, context))
 
-    def convert(self, text: str) -> str:
+    def convert(self, text: str, context: str | None = None) -> str:
         if not text:
             return text
         out = []
         last = 0
-        for start, end, rep, _ in self.edits(text):
+        for start, end, rep, _ in self.edits(text, context):
             out.append(text[last:start])
             out.append(rep)
             last = end
@@ -73,13 +81,13 @@ class Converter:
 
 # ============================================================ Yangi alifbo (lotin ichida)
 class NewAlphabetConverter(Converter):
-    def edits(self, text: str) -> list[Edit]:
+    def edits(self, text: str, context: str | None = None) -> list[Edit]:
         return [(start, start + 2, rep, kind) for start, kind, rep in iter_matches(text)]
 
-    def count(self, text: str) -> Counter:
+    def count(self, text: str, context: str | None = None) -> Counter:
         return count_matches(text)
 
-    def convert(self, text: str) -> str:
+    def convert(self, text: str, context: str | None = None) -> str:
         return to_new_alphabet(text)
 
 
@@ -97,12 +105,29 @@ _CYR_LETTERS = frozenset(_CYR_BASE) | {"е", "ц", "ъ"}
 
 
 class CyrToLatConverter(Converter):
-    """O'zbek kirill -> lotin. new=True bo'lsa yangi alifbo (ş, ç, ğ, ö)."""
+    """O'zbek kirill -> lotin. new=True bo'lsa yangi alifbo (ş, ç, ğ, ö).
 
-    def __init__(self, new: bool = False) -> None:
+    Rus tilidagi paragraflarga TEGILMAYDI. Tili aniqlanmagan qisqa paragraf
+    (masalan, "Бухоро") avval qo'shni paragraflarga, ular ham bo'lmasa unknown_is_uz
+    ga qarab hal qilinadi — u hujjatdagi o'zbek/rus qismlar nisbatidan olinadi.
+    """
+
+    def __init__(self, new: bool = False, unknown_is_uz: bool = True) -> None:
         self.new = new
+        self.unknown_is_uz = unknown_is_uz
 
-    def edits(self, text: str) -> list[Edit]:
+    def contexts(self, texts: list[str]) -> list[str | None]:
+        return neighbor_contexts(texts)
+
+    def is_uzbek(self, text: str) -> bool:
+        lang = classify_cyrillic(text)
+        return lang == "uz" or (lang is None and self.unknown_is_uz)
+
+    def edits(self, text: str, context: str | None = None) -> list[Edit]:
+        if not any(c.lower() in _CYR_LETTERS for c in text):
+            return []
+        if not self.is_uzbek(context if context is not None else text):
+            return []                     # rus tilidagi matn — o'girilmaydi
         spans = protected_spans(text)
         out: list[Edit] = []
         i, n = 0, len(text)
@@ -166,7 +191,7 @@ class LatToCyrConverter(Converter):
     def __init__(self, new_mode: bool | None = None) -> None:
         self.new_mode = new_mode
 
-    def edits(self, text: str) -> list[Edit]:
+    def edits(self, text: str, context: str | None = None) -> list[Edit]:
         spans = protected_spans(text) + [(m.start(), m.end()) for m in _ROMAN_RE.finditer(text)]
         new_mode = self.new_mode
         if new_mode is None:
@@ -229,17 +254,27 @@ class LatToCyrConverter(Converter):
 
 # ============================================================ Yozuv tarkibi (sanash)
 class ScriptStats(Converter):
-    """Hech narsani o'zgartirmaydi — kirill/lotin harflar va alifbo turini sanaydi."""
+    """Hech narsani o'zgartirmaydi — yozuv va til tarkibini sanaydi.
 
-    def edits(self, text: str) -> list[Edit]:
+    Kalitlar: kirill_uz, kirill_ru, kirill_unk (tili aniqlanmagan), lotin, yangi, eski.
+    """
+
+    def contexts(self, texts: list[str]) -> list[str | None]:
+        return neighbor_contexts(texts)
+
+    def edits(self, text: str, context: str | None = None) -> list[Edit]:
         return []
 
-    def count(self, text: str) -> Counter:
+    def count(self, text: str, context: str | None = None) -> Counter:
         counter: Counter = Counter()
+        cyr_key = None
         for ch in text:
             low = ch.lower()
             if low in _CYR_LETTERS:
-                counter["kirill"] += 1
+                if cyr_key is None:
+                    lang = classify_cyrillic(context if context is not None else text)
+                    cyr_key = {"uz": "kirill_uz", "ru": "kirill_ru"}.get(lang, "kirill_unk")
+                counter[cyr_key] += 1
             elif low in _LAT_SINGLE:
                 counter["lotin"] += 1
                 if ch in _NEW_LETTERS:
