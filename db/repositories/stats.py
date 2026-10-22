@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from data import config
-from db.models import Payment, PaymentStatus, Task, User
+from db.models import Payment, PaymentStatus, Task, TaskStatus, User
 
 # O'zbekiston vaqti (UTC+5, DST yo'q)
 TASHKENT = timezone(timedelta(hours=5))
@@ -20,7 +20,9 @@ class Stats:
     users_week: int
     users_total: int
     revenue_total: int      # so'm (tasdiqlangan to'lovlar)
-    tokens_sold: int        # sotilgan tokenlar
+    premium_sold: int       # sotilgan premiumlar (tasdiqlangan to'lovlar soni)
+    premium_active: int     # hozir premiumi faol userlar
+    files_done: int         # tahrirlangan fayllar (jami)
     ai_cost_usd: float      # sarflangan OpenAI puli
     ai_left_usd: float      # qolgan (byudjet - sarf)
 
@@ -57,12 +59,26 @@ class StatsRepository:
                 )
             ).scalar_one()
         )
-        tokens_sold = int(
+        premium_sold = int(
             (
                 await self.session.execute(
-                    select(func.coalesce(func.sum(Payment.tokens), 0)).where(
-                        Payment.status == PaymentStatus.APPROVED
+                    select(func.count(Payment.id)).where(Payment.status == PaymentStatus.APPROVED)
+                )
+            ).scalar_one()
+        )
+        premium_active = int(
+            (
+                await self.session.execute(
+                    select(func.count(User.id)).where(
+                        User.premium_until > datetime.now(timezone.utc)
                     )
+                )
+            ).scalar_one()
+        )
+        files_done = int(
+            (
+                await self.session.execute(
+                    select(func.count(Task.id)).where(Task.status == TaskStatus.DONE)
                 )
             ).scalar_one()
         )
@@ -79,7 +95,9 @@ class StatsRepository:
             users_week=users_week,
             users_total=users_total,
             revenue_total=revenue,
-            tokens_sold=tokens_sold,
+            premium_sold=premium_sold,
+            premium_active=premium_active,
+            files_done=files_done,
             ai_cost_usd=round(ai_cost, 4),
             ai_left_usd=round(ai_left, 4),
         )

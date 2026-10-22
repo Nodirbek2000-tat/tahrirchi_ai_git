@@ -8,5 +8,6 @@ bot = Bot(token=config.BOT_TOKEN, parse_mode=types.ParseMode.HTML)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-# AI xizmati — faqat tarjima uchun. Harflarni o'girish AI'siz (translit_engine).
+# AI xizmati — faqat imloda, qoidalar hal qila olmagan murakkab gaplar uchun.
+# Harflarni o'girish va asosiy imlo qoidalari AI'siz (translit_engine, services/spelling).
 ai = AICorrector()

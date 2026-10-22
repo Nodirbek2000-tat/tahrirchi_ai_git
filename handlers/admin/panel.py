@@ -20,6 +20,7 @@ from keyboards.inline.admin_panel import (
 )
 from keyboards.inline.callbacks import admin_cb, channel_del_cb, free_gift_cb
 from loader import bot, dp
+from services.access import fmt_date, free_files_default, premium_price
 from services.broadcast import run_personal
 from states import AdminState, BroadcastState
 
@@ -45,9 +46,10 @@ async def admin_panel(message: types.Message, admins: AdminRepository, state: FS
     state=[
         AdminState.waiting_new_admin,
         AdminState.waiting_channel,
-        AdminState.waiting_free_tokens,
+        AdminState.waiting_free_files,
         AdminState.confirm_free_gift,
-        AdminState.waiting_token_price,
+        AdminState.waiting_premium_price,
+        AdminState.waiting_premium_user,
     ],
 )
 async def cancel_admin(message: types.Message, state: FSMContext):
@@ -82,8 +84,8 @@ async def admin_actions(
 
     elif action == "stats":
         s = await stats.collect()
-        free_tokens = int(await settings.get_value(config.SETTING_FREE_TOKENS, config.FREE_TOKENS))
-        token_price = int(await settings.get_value(config.SETTING_TOKEN_PRICE, config.TOKEN_PRICE))
+        free_files = await free_files_default(settings)
+        price = await premium_price(settings)
         text = (
             "📊 <b>Statistika</b>\n\n"
             "👥 <b>Foydalanuvchilar:</b>\n"
@@ -91,10 +93,12 @@ async def admin_actions(
             f"• Kecha: <b>{s.users_yesterday}</b>\n"
             f"• Oxirgi 7 kun: <b>{s.users_week}</b>\n"
             f"• Jami: <b>{s.users_total}</b>\n\n"
+            f"💎 Premium faol: <b>{s.premium_active}</b> ta user\n"
+            f"🧾 Sotilgan premium: <b>{s.premium_sold}</b> ta\n"
             f"💰 Daromad (tasdiqlangan): <b>{_fmt_som(s.revenue_total)} so'm</b>\n"
-            f"🪙 Sotilgan token: <b>{s.tokens_sold}</b>\n\n"
-            f"🎁 Free token (yangi userga): <b>{free_tokens}</b>\n"
-            f"💵 1 token narxi: <b>{_fmt_som(token_price)} so'm</b>\n\n"
+            f"📄 Tahrirlangan fayllar: <b>{s.files_done}</b>\n\n"
+            f"🎁 Bepul fayllar (yangi userga): <b>{free_files}</b>\n"
+            f"💵 Premium narxi: <b>{_fmt_som(price)} so'm</b> / {config.PREMIUM_DAYS} kun\n\n"
             f"🤖 AI xarajati: <b>${s.ai_cost_usd}</b>\n"
         )
         if config.OPENAI_BUDGET_USD > 0:
@@ -104,25 +108,35 @@ async def admin_actions(
         await call.message.edit_text(text, reply_markup=back_menu())
 
     elif action == "set_free":
-        current = int(await settings.get_value(config.SETTING_FREE_TOKENS, config.FREE_TOKENS))
-        await AdminState.waiting_free_tokens.set()
+        current = await free_files_default(settings)
+        await AdminState.waiting_free_files.set()
         await call.message.edit_text(
-            f"🎁 <b>Free token sozlash</b>\n\n"
-            f"Joriy qiymat: <b>{current}</b> token\n\n"
-            f"Yangi userga beriladigan token sonini (butun son) yuboring.\n\n"
-            f"ℹ️ Yangi qiymat ko'proq bo'lsa, eski userlarga farqini sovg'a qilish "
-            f"taklif qilinadi. Kamaytirilsa, eski userlardan token olinmaydi.\n\n"
+            f"🎁 <b>Bepul fayllar soni</b>\n\n"
+            f"Joriy qiymat: <b>{current}</b> ta fayl\n\n"
+            f"Yangi userga nechta faylni bepul tahrirlash berilsin (butun son)?\n\n"
+            f"ℹ️ Ko'paytirilsa, eski userlarga farqini sovg'a qilish taklif qilinadi. "
+            f"Kamaytirilsa, eski userlardan olinmaydi.\n\n"
             f"Bekor qilish: /cancel"
         )
 
     elif action == "set_price":
-        current = int(await settings.get_value(config.SETTING_TOKEN_PRICE, config.TOKEN_PRICE))
-        await AdminState.waiting_token_price.set()
+        current = await premium_price(settings)
+        await AdminState.waiting_premium_price.set()
         await call.message.edit_text(
-            f"💵 <b>Token narxi sozlash</b>\n\n"
-            f"Joriy qiymat: <b>{_fmt_som(current)} so'm</b> / 1 token\n\n"
-            f"1 token narxini (so'mda, butun son) yuboring. Masalan: 300\n\n"
+            f"💎 <b>Premium narxi</b>\n\n"
+            f"Joriy qiymat: <b>{_fmt_som(current)} so'm</b> / {config.PREMIUM_DAYS} kun\n\n"
+            f"Yangi narxni (so'mda, butun son) yuboring. Masalan: 20000\n\n"
             f"Bekor qilish: /cancel"
+        )
+
+    elif action == "give_premium":
+        await AdminState.waiting_premium_user.set()
+        await call.message.edit_text(
+            "👑 <b>Premium berish</b>\n\n"
+            "Userning <b>Telegram ID</b> raqamini va kun sonini yuboring.\n"
+            f"Masalan: <code>123456789 {config.PREMIUM_DAYS}</code>\n"
+            f"(kun yozilmasa — {config.PREMIUM_DAYS} kun)\n\n"
+            "Bekor qilish: /cancel"
         )
 
     elif action == "broadcast":
@@ -255,9 +269,9 @@ async def receive_channel(
     )
 
 
-# ---------- Free token sozlash ----------
-@dp.message_handler(state=AdminState.waiting_free_tokens, content_types=types.ContentType.ANY)
-async def receive_free_tokens(
+# ---------- Bepul fayllar soni ----------
+@dp.message_handler(state=AdminState.waiting_free_files, content_types=types.ContentType.ANY)
+async def receive_free_files(
     message: types.Message,
     users: UserRepository,
     settings: SettingRepository,
@@ -265,25 +279,25 @@ async def receive_free_tokens(
 ):
     text = (message.text or "").strip()
     if not text.isdigit():
-        await message.answer("❗ Faqat butun son yuboring. Masalan: 30")
+        await message.answer("❗ Faqat butun son yuboring. Masalan: 2")
         return
     value = int(text)
-    if value > 1_000_000:
+    if value > 1000:
         await message.answer("❗ Juda katta son. Kichikroq qiymat yuboring.")
         return
 
-    old = int(await settings.get_value(config.SETTING_FREE_TOKENS, config.FREE_TOKENS))
+    old = await free_files_default(settings)
 
     # Kamaytirilsa yoki o'zgarmasa — faqat yangi userlarga ta'sir qiladi
     if value <= old:
-        await settings.set_value(config.SETTING_FREE_TOKENS, value)
+        await settings.set_value(config.SETTING_FREE_FILES, value)
         await state.finish()
         note = (
-            "Eski userlardan token olinmaydi — bu faqat yangi userlarga ta'sir qiladi."
+            "Eski userlardan olinmaydi — bu faqat yangi userlarga ta'sir qiladi."
             if value < old else "Qiymat o'zgarmadi."
         )
         await message.answer(
-            f"✅ Free token: <b>{old}</b> → <b>{value}</b>\n{note}",
+            f"✅ Bepul fayllar: <b>{old}</b> → <b>{value}</b>\n{note}",
             reply_markup=admin_menu(),
         )
         return
@@ -294,11 +308,11 @@ async def receive_free_tokens(
     await state.update_data(free_old=old, free_new=value)
     await AdminState.confirm_free_gift.set()
     await message.answer(
-        f"🎁 Free token: <b>{old}</b> → <b>{value}</b>\n\n"
+        f"🎁 Bepul fayllar: <b>{old}</b> → <b>{value}</b>\n\n"
         f"Botda <b>{_fmt_som(total)}</b> ta eski user bor.\n"
-        f"Ularning har biriga <b>+{diff} token</b> sovg'a qilinsinmi?\n\n"
-        f"Har biriga xabar boradi: «Sizga admin tomonidan {diff} ta token sovg'a "
-        f"qilindi» va joriy balansi.",
+        f"Ularning har biriga <b>+{diff} bepul fayl</b> sovg'a qilinsinmi?\n\n"
+        f"Har biriga xabar boradi: «Sizga admin tomonidan {diff} ta bepul fayl sovg'a "
+        f"qilindi» va qolgan bepul fayllari soni.",
         reply_markup=free_gift_keyboard(diff),
     )
 
@@ -324,37 +338,37 @@ async def confirm_free_gift(
 
     if action == "cancel" or new is None:
         await call.message.edit_text(
-            "❌ Bekor qilindi. Free token o'zgarmadi.", reply_markup=admin_menu()
+            "❌ Bekor qilindi. Bepul fayllar soni o'zgarmadi.", reply_markup=admin_menu()
         )
         return
 
     if action == "new":
-        await settings.set_value(config.SETTING_FREE_TOKENS, new)
+        await settings.set_value(config.SETTING_FREE_FILES, new)
         await call.message.edit_text(
-            f"✅ Free token: <b>{old}</b> → <b>{new}</b>\nFaqat yangi userlarga ta'sir qiladi.",
+            f"✅ Bepul fayllar: <b>{old}</b> → <b>{new}</b>\nFaqat yangi userlarga ta'sir qiladi.",
             reply_markup=admin_menu(),
         )
         return
 
     # action == "all": eski userlarga farqini sovg'a qilish
     diff = new - old
-    updated = await users.add_tokens_all(diff)
-    await settings.set_value(config.SETTING_FREE_TOKENS, new)
-    balances = await users.balances()
+    updated = await users.add_free_files_all(diff)
+    await settings.set_value(config.SETTING_FREE_FILES, new)
+    balances = await users.free_files_list()
 
     await call.message.edit_text(
-        f"✅ Free token: <b>{old}</b> → <b>{new}</b>\n"
-        f"🎁 <b>{_fmt_som(updated)}</b> ta userga <b>+{diff}</b> token qo'shildi.\n"
+        f"✅ Bepul fayllar: <b>{old}</b> → <b>{new}</b>\n"
+        f"🎁 <b>{_fmt_som(updated)}</b> ta userga <b>+{diff}</b> bepul fayl qo'shildi.\n"
         f"📤 Xabarlar yuborilmoqda... Yakunda hisobot keladi."
     )
 
     messages = [
         (
             user_id,
-            f"🎁 Sizga admin tomonidan <b>{diff} ta token</b> sovg'a qilindi!\n"
-            f"💰 Balansingiz: <b>{tokens}</b> token.",
+            f"🎁 Sizga admin tomonidan <b>{diff} ta bepul fayl</b> sovg'a qilindi!\n"
+            f"📄 Bepul tahrirlash mumkin: <b>{left}</b> ta fayl.",
         )
-        for user_id, tokens in balances
+        for user_id, left in balances
     ]
     admin_id = call.from_user.id
 
@@ -373,23 +387,59 @@ async def confirm_free_gift(
     asyncio.create_task(job())
 
 
-# ---------- Token narxi sozlash ----------
-@dp.message_handler(state=AdminState.waiting_token_price, content_types=types.ContentType.ANY)
-async def receive_token_price(
+# ---------- Premium narxi ----------
+@dp.message_handler(state=AdminState.waiting_premium_price, content_types=types.ContentType.ANY)
+async def receive_premium_price(
     message: types.Message, settings: SettingRepository, state: FSMContext
 ):
     text = (message.text or "").strip().replace(" ", "")
     if not text.isdigit():
-        await message.answer("❗ Faqat butun son yuboring. Masalan: 300")
+        await message.answer("❗ Faqat butun son yuboring. Masalan: 20000")
         return
     value = int(text)
-    if value <= 0 or value > 10_000_000:
-        await message.answer("❗ Noto'g'ri narx. 1 dan katta, haqiqiy qiymat yuboring.")
+    if value <= 0 or value > 100_000_000:
+        await message.answer("❗ Noto'g'ri narx. Haqiqiy qiymat yuboring.")
         return
-    await settings.set_value(config.SETTING_TOKEN_PRICE, value)
+    await settings.set_value(config.SETTING_PREMIUM_PRICE, value)
     await state.finish()
     await message.answer(
-        f"✅ 1 token narxi <b>{_fmt_som(value)} so'm</b> qilib o'rnatildi.\n"
-        f"Paketlar narxi avtomatik yangilanadi (token soni × narx).",
+        f"✅ Premium narxi <b>{_fmt_som(value)} so'm</b> / {config.PREMIUM_DAYS} kun "
+        f"qilib o'rnatildi.",
         reply_markup=admin_menu(),
     )
+
+
+# ---------- Qo'lda premium berish ----------
+@dp.message_handler(state=AdminState.waiting_premium_user, content_types=types.ContentType.ANY)
+async def receive_premium_user(
+    message: types.Message, users: UserRepository, state: FSMContext
+):
+    parts = (message.text or "").split()
+    if not parts or not parts[0].isdigit() or (len(parts) > 1 and not parts[1].isdigit()):
+        await message.answer(f"❗ Masalan: <code>123456789 {config.PREMIUM_DAYS}</code>")
+        return
+    user_id = int(parts[0])
+    days = int(parts[1]) if len(parts) > 1 else config.PREMIUM_DAYS
+    if not 1 <= days <= 3650:
+        await message.answer("❗ Kun soni 1 dan 3650 gacha bo'lsin.")
+        return
+    if await users.get(user_id) is None:
+        await message.answer("❗ Bu ID bilan user topilmadi (u botga /start bosmagan).")
+        return
+    until = await users.extend_premium(user_id, days)
+    await state.finish()
+    await message.answer(
+        f"✅ <code>{user_id}</code> ga <b>{days} kun</b> premium berildi — "
+        f"<b>{fmt_date(until)}</b> gacha.",
+        reply_markup=admin_menu(),
+    )
+    try:
+        await bot.send_message(
+            user_id,
+            f"🎁 Sizga admin tomonidan <b>{days} kunlik 💎 Premium</b> berildi!\n"
+            f"Hamma imkoniyatlar <b>{fmt_date(until)}</b> gacha cheksiz.",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Premium xabari yuborilmadi: %s", exc)
+
+

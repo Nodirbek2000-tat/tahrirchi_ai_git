@@ -19,7 +19,7 @@ class Payment(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, index=True)
     package: Mapped[str] = mapped_column(String(32))
-    tokens: Mapped[int] = mapped_column(Integer)
+    days: Mapped[int] = mapped_column(Integer, default=0)  # necha kunlik premium
     amount: Mapped[int] = mapped_column(Integer)  # so'm
     status: Mapped[PaymentStatus] = mapped_column(
         Enum(PaymentStatus), default=PaymentStatus.PENDING, index=True

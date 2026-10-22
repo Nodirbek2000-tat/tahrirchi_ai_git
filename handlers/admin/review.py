@@ -7,6 +7,7 @@ from db.models import PaymentStatus
 from db.repositories import PaymentRepository, UserRepository
 from keyboards.inline.callbacks import review_cb
 from loader import bot, dp
+from services.access import fmt_date
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +33,14 @@ async def review_payment(
         return
 
     if action == "approve":
-        await users.add_tokens(payment.user_id, payment.tokens)
-        suffix = f"\n\n✅ <b>Tasdiqladi:</b> {call.from_user.full_name}"
+        days = payment.days or config.PREMIUM_DAYS
+        until = await users.extend_premium(payment.user_id, days)
+        suffix = f"\n\n✅ <b>Tasdiqladi:</b> {call.from_user.full_name} · {fmt_date(until)} gacha"
         try:
             await bot.send_message(
                 payment.user_id,
-                f"✅ To'lovingiz tasdiqlandi!\n🪙 <b>{payment.tokens} token</b> "
-                f"hisobingizga qo'shildi.",
+                f"✅ To'lovingiz tasdiqlandi!\n💎 <b>Premium faollashdi</b> — "
+                f"<b>{fmt_date(until)}</b> gacha hamma imkoniyatlar cheksiz.",
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Foydalanuvchiga xabar yuborilmadi: %s", exc)
@@ -47,8 +49,7 @@ async def review_payment(
         try:
             await bot.send_message(
                 payment.user_id,
-                "❌ To'lovingiz rad etildi. Agar xatolik bo'lsa, admin bilan "
-                "bog'laning.",
+                "❌ To'lovingiz rad etildi. Agar xatolik bo'lsa, admin bilan bog'laning.",
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Foydalanuvchiga xabar yuborilmadi: %s", exc)

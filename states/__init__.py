@@ -1,14 +1,14 @@
-from .payment import BuyTokenState, ProcessFileState
+from .payment import BuyPremiumState, ProcessFileState
 from .admin import AdminState
-from .translate import TranslateState
 from .broadcast import BroadcastState
 from .script import ScriptState
+from .spell import SpellState
 
 __all__ = [
-    "BuyTokenState",
+    "BuyPremiumState",
     "ProcessFileState",
     "AdminState",
-    "TranslateState",
     "BroadcastState",
     "ScriptState",
+    "SpellState",
 ]

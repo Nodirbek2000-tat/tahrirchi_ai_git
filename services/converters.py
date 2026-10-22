@@ -56,9 +56,20 @@ class Converter:
     """context — qaror qaysi matnga qarab qabul qilinishi (masalan PDF blok matni yoki
     tili aniqlanmagan sarlavha uchun qo'shni paragraf). None — bo'lakning o'zi."""
 
-    def contexts(self, texts: list[str]) -> list[str | None]:
-        """Hujjat tartibidagi paragraflar uchun kontekstlar (til hisobga olinmasa — None)."""
+    def contexts(self, texts: list[str], firsts: list[bool] | None = None) -> list:
+        """Hujjat tartibidagi bo'laklar uchun kontekstlar (til hisobga olinmasa — None).
+
+        firsts[i] — bo'lak o'z paragrafining birinchisimi (tab/qator uzilishidan keyingisi emas).
+        """
         return [None] * len(texts)
+
+    def split_context(self, context, prev_text: str | None):
+        """Paragraf kontekstidan uning ichidagi qator uchun kontekst (PDF qatorlari)."""
+        return context
+
+    def for_cells(self) -> "Converter":
+        """Excel kataklari va formulalar uchun konverter (ehtiyotkorroq bo'lishi mumkin)."""
+        return self
 
     def edits(self, text: str, context: str | None = None) -> list[Edit]:
         raise NotImplementedError
@@ -116,7 +127,7 @@ class CyrToLatConverter(Converter):
         self.new = new
         self.unknown_is_uz = unknown_is_uz
 
-    def contexts(self, texts: list[str]) -> list[str | None]:
+    def contexts(self, texts: list[str], firsts: list[bool] | None = None) -> list:
         return neighbor_contexts(texts)
 
     def is_uzbek(self, text: str) -> bool:
@@ -259,7 +270,7 @@ class ScriptStats(Converter):
     Kalitlar: kirill_uz, kirill_ru, kirill_unk (tili aniqlanmagan), lotin, yangi, eski.
     """
 
-    def contexts(self, texts: list[str]) -> list[str | None]:
+    def contexts(self, texts: list[str], firsts: list[bool] | None = None) -> list:
         return neighbor_contexts(texts)
 
     def edits(self, text: str, context: str | None = None) -> list[Edit]:

@@ -1,12 +1,11 @@
-"""OpenAI xizmati: imlo tuzatish VA tarjima.
+"""OpenAI: murakkab gaplarda imlo va tinish belgilarini tekshirish.
 
-Matn bo'laklari INDEKSLI JSON obyekt ko'rinishida yuboriladi:
-    {"0": "matn", "1": "matn", ...}
-AI aynan o'sha kalitlar bilan qaytaradi. Biror kalit yo'qolsa/xato bo'lsa —
-faqat o'sha bo'lak asl holida qoladi (fayl hech qachon buzilmaydi).
+Tejamkorlik: qoidalar hal qila olmagan gaplargina yuboriladi, javobda esa FAQAT
+o'zgargan gaplar qaytadi ({"3": "tuzatilgan gap"}), xatosiz gaplar umuman qaytmaydi —
+chiqish tokenlari minimal. AI javobi services/spelling/ai.py da qat'iy tekshiriladi.
 
 Ishonchlilik: kichik guruhlar, cheklangan parallel so'rovlar (semaphore),
-har so'rovga timeout.
+har so'rovga timeout, xatoda qayta urinish. Xato bo'lsa gap o'zgarishsiz qoladi.
 """
 
 import asyncio
@@ -21,54 +20,23 @@ from db.repositories.setting import SettingRepository
 
 logger = logging.getLogger(__name__)
 
-_CORRECT_PROMPT = (
-    "Siz o'zbek tili (lotin) uchun imlo va grammatika muharririsiz. "
-    "Sizga JSON obyekt beriladi: kalit — raqamli indeks, qiymat — matn bo'lagi. "
-    "Har bir qiymatdagi imloviy va grammatik xatolarni to'g'irlang.\n"
-    "QAT'IY QOIDALAR:\n"
-    "1. Matnni tarjima QILMANG, tilini o'zgartirmang.\n"
-    "2. Mazmun, ma'no va gap tuzilishini saqlang — faqat xatolarni tuzating.\n"
-    "3. BARCHA kalitlarni aynan o'sha nomlar bilan qaytaring, birontasini tashlamang.\n"
-    "4. Bo'sh yoki faqat belgi/raqamdan iborat qiymatlarni o'zgartirmang.\n"
-    "5. Hech qanday izoh yozmang.\n"
-    'Javob faqat JSON: {"0": "...", "1": "...", ...} — kirish bilan bir xil kalitlar.'
+_PROOFREAD_PROMPT = (
+    "You are a strict proofreader for UZBEK texts. Input: JSON object, key = id, "
+    "value = one Uzbek sentence (Latin or Cyrillic script).\n"
+    "Fix ONLY: misspelled words and missing/wrong punctuation (especially commas) "
+    "according to official Uzbek orthography and punctuation rules.\n"
+    "STRICT RULES:\n"
+    "1. Never rephrase, never translate, never change word order, never add or remove words.\n"
+    "2. Keep the script: Cyrillic stays Cyrillic, Latin stays Latin. In Latin use "
+    "oʻ gʻ with ʻ and the tutuq sign ʼ.\n"
+    "3. Do not touch names, numbers, abbreviations, foreign or Russian words.\n"
+    "4. If unsure — leave the sentence unchanged.\n"
+    "5. Return ONLY the sentences you changed, as JSON {\"id\": \"corrected sentence\"}. "
+    "If nothing needs a change, return {}."
 )
 
-_LANG_FULL = {
-    "ru": "rus (Russian)",
-    "uz": "o'zbek (Uzbek, lotin)",
-    "en": "ingliz (English)",
-}
-
-
-def _translate_prompt(target_lang: str) -> str:
-    target = _LANG_FULL.get(target_lang, target_lang)
-    return (
-        f"Siz professional tarjimonsiz. Sizga JSON obyekt beriladi: "
-        f"kalit — raqamli indeks, qiymat — matn bo'lagi. "
-        f"Har bir qiymatni TO'LIQ {target} tiliga aniq va tabiiy tarjima qiling.\n"
-        "QAT'IY QOIDALAR:\n"
-        f"1. HAR BIR so'zni {target} tiliga tarjima qiling. Manba tilida (o'zbek, "
-        "rus yoki ingliz) BIRORTA ham so'z qolmasin — hatto bitta so'z bo'lsa ham tarjima qiling.\n"
-        "2. Ma'noni to'liq saqlang, xatosiz va ravon tarjima qiling.\n"
-        "3. BARCHA kalitlarni aynan o'sha nomlar bilan qaytaring, birontasini tashlamang.\n"
-        "4. Faqat raqam, belgi yoki nuqta-chiziqdan iborat qiymatlarni o'zgartirmang.\n"
-        "5. Atoqli ismlar va lotincha ilmiy nomlar (masalan Cucumis melo) o'zgarmasin.\n"
-        "6. Hech qanday izoh yozmang.\n"
-        'Javob faqat JSON: {"0": "...", "1": "...", ...} — kirish bilan bir xil kalitlar.'
-    )
-
-
-_DETECT_PROMPT = (
-    "Siz til aniqlagichsiz. Berilgan matnni BUTUNLIGICHA (gaplar va so'zlar bo'yicha) "
-    "tahlil qiling va uning necha foizi o'zbek (uz), rus (ru), ingliz (en) tilida "
-    "ekanini baholang. Faqat matn boshini emas, BUTUN matnni hisobga oling. "
-    "Faqat JSON qaytaring: {\"uz\": <butun son>, \"ru\": <butun son>, "
-    "\"en\": <butun son>} — yig'indisi ~100 bo'lsin."
-)
-
-_MAX_ITEMS_PER_CALL = 30
-_MAX_CHARS_PER_CALL = 4000
+_MAX_ITEMS_PER_CALL = 40
+_MAX_CHARS_PER_CALL = 5000
 _MAX_RETRIES = 2
 _REQUEST_TIMEOUT = 90.0
 
@@ -83,114 +51,57 @@ class AICorrector:
         self._model = config.OPENAI_MODEL
         self._sem = asyncio.Semaphore(config.AI_CONCURRENCY)
 
-    # --- Ommaviy metodlar ---
-    async def correct(self, segments: list[str]) -> list[str]:
-        return await self._run(segments, _CORRECT_PROMPT)
-
-    async def translate(self, segments: list[str], target_lang: str) -> list[str]:
-        return await self._run(segments, _translate_prompt(target_lang))
-
-    async def detect_language_stats(self, text: str) -> dict:
-        """Butun matnni tahlil qilib, {uz, ru, en} foizlarini qaytaradi (yig'indi ~100)."""
-        if not text or not text.strip():
+    async def proofread(self, sentences: list[str]) -> dict[int, str]:
+        """Gaplar ro'yxati -> {indeks: tuzatilgan gap} (faqat AI o'zgartirganlari)."""
+        if not sentences or not config.OPENAI_API_KEY:
             return {}
-        try:
-            async with self._sem:
-                response = await self._client.chat.completions.create(
-                    model=self._model,
-                    temperature=0,
-                    response_format={"type": "json_object"},
-                    messages=[
-                        {"role": "system", "content": _DETECT_PROMPT},
-                        {"role": "user", "content": text[:8000]},
-                    ],
-                )
-            await self._record_usage(getattr(response, "usage", None))
-            data = json.loads(response.choices[0].message.content)
-            raw = {}
-            for code in ("uz", "ru", "en"):
-                try:
-                    raw[code] = max(0, int(round(float(data.get(code, 0)))))
-                except (TypeError, ValueError):
-                    raw[code] = 0
-            total = sum(raw.values())
-            if total == 0:
-                return {}
-            # 100 ga normallashtirish
-            return {code: round(val * 100 / total) for code, val in raw.items()}
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Til aniqlash xatosi: %s", exc)
-            return {}
-
-    # --- Ichki ish ---
-    async def _run(self, segments: list[str], system_prompt: str) -> list[str]:
-        if not segments:
-            return []
-        result: list[str] = list(segments)  # sukut — asl matn (hech narsa yo'qolmaydi)
-        tasks = [
-            self._run_batch(segments, start, end, system_prompt)
-            for start, end in self._make_batches(segments)
-        ]
-        for (start, end), out in await asyncio.gather(*tasks):
-            result[start:end] = out
+        tasks = [self._proofread_batch(sentences, start, end)
+                 for start, end in self._make_batches(sentences)]
+        result: dict[int, str] = {}
+        for part in await asyncio.gather(*tasks):
+            result.update(part)
         return result
 
-    def _make_batches(self, segments: list[str]) -> list[tuple[int, int]]:
+    def _make_batches(self, items: list[str]) -> list[tuple[int, int]]:
         batches: list[tuple[int, int]] = []
-        start = 0
-        count = 0
-        chars = 0
-        for i, seg in enumerate(segments):
-            seg_len = len(seg or "")
-            if count and (count >= _MAX_ITEMS_PER_CALL or chars + seg_len > _MAX_CHARS_PER_CALL):
+        start = count = chars = 0
+        for i, item in enumerate(items):
+            size = len(item)
+            if count and (count >= _MAX_ITEMS_PER_CALL or chars + size > _MAX_CHARS_PER_CALL):
                 batches.append((start, i))
                 start, count, chars = i, 0, 0
             count += 1
-            chars += seg_len
-        batches.append((start, len(segments)))
+            chars += size
+        batches.append((start, len(items)))
         return batches
 
-    async def _run_batch(
-        self, segments: list[str], start: int, end: int, system_prompt: str
-    ) -> tuple[tuple[int, int], list[str]]:
-        chunk = segments[start:end]
-        out = list(chunk)  # sukut — asl matn
-        remaining = [i for i in range(len(chunk)) if (chunk[i] or "").strip()]
-
+    async def _proofread_batch(self, items: list[str], start: int, end: int) -> dict[int, str]:
+        payload = {str(i - start): items[i] for i in range(start, end)}
         async with self._sem:
             for attempt in range(_MAX_RETRIES + 1):
-                if not remaining:
-                    break
-                payload = {str(i): (chunk[i] or "") for i in remaining}
                 try:
                     response = await self._client.chat.completions.create(
                         model=self._model,
                         temperature=0,
                         response_format={"type": "json_object"},
                         messages=[
-                            {"role": "system", "content": system_prompt},
+                            {"role": "system", "content": _PROOFREAD_PROMPT},
                             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
                         ],
                     )
                     await self._record_usage(getattr(response, "usage", None))
-                    data = json.loads(response.choices[0].message.content)
-                    if isinstance(data, dict):
-                        # Faqat tashlab ketilgan/xato bo'laklarni qayta so'raymiz
-                        still_missing = []
-                        for i in remaining:
-                            value = data.get(str(i))
-                            if isinstance(value, str):
-                                out[i] = value
-                            else:
-                                still_missing.append(i)
-                        remaining = still_missing
-                    else:
-                        logger.warning("AI javobi obyekt emas")
+                    data = json.loads(response.choices[0].message.content or "{}")
+                    if not isinstance(data, dict):
+                        return {}
+                    out = {}
+                    for key, value in data.items():
+                        if isinstance(value, str) and key.isdigit() and int(key) < end - start:
+                            out[start + int(key)] = value
+                    return out
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("AI so'rov xatosi (urinish %s): %s", attempt + 1, exc)
                     await asyncio.sleep(1.0 * (attempt + 1))
-
-        return (start, end), out
+        return {}
 
     async def _record_usage(self, usage) -> None:
         if not usage:

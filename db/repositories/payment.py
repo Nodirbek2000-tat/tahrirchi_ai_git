@@ -11,10 +11,10 @@ class PaymentRepository:
         self.session = session
 
     async def create(
-        self, user_id: int, package: str, tokens: int, amount: int
+        self, user_id: int, package: str, days: int, amount: int
     ) -> Payment:
         payment = Payment(
-            user_id=user_id, package=package, tokens=tokens, amount=amount
+            user_id=user_id, package=package, days=days, amount=amount
         )
         self.session.add(payment)
         await self.session.commit()

@@ -6,16 +6,15 @@ SQLAlchemy[asyncio]==2.0.30
 asyncpg==0.29.0
 alembic==1.13.1
 
-# OpenAI
+# OpenAI (imloda faqat murakkab gaplar uchun)
 openai==1.30.5
 httpx==0.27.2  # openai 1.30.x httpx 0.28 bilan mos emas (proxies)
 
 # File processing
+lxml==6.1.1       # Word/Excel/PowerPoint XML'ini to'g'ridan-to'g'ri tahrirlash
 python-docx==1.1.2
 openpyxl==3.1.2
 python-pptx==0.6.23
 pypdf==4.2.0
-reportlab==4.2.0
-pdf2docx==0.5.8   # PDF -> DOCX (matn/rasm/joylashuv). DOCX -> PDF: LibreOffice (Dockerfile)
 PyMuPDF==1.28.0   # PDF'ni asl dizaynida tahrirlash (services/files/pdf_inplace.py)
 fonttools==4.63.0 # PDF'ga qo'shiladigan shriftdan faqat kerakli harflarni olish

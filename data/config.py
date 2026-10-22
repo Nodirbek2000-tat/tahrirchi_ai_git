@@ -40,24 +40,23 @@ CARD_NUMBER = env.str("CARD_NUMBER", "9860 1701 0951 8093")
 CARD_HOLDER = env.str("CARD_HOLDER", "Nodirbek Shukurov")
 
 # --- Biznes qoidalar ---
-# FREE_TOKENS va TOKEN_PRICE — DASTLABKI (default) qiymatlar.
-# Admin panel ularni bazada (settings jadvalida) o'zgartiradi.
-FREE_TOKENS = 30           # yangi userga beriladigan tekin token (default)
-TOKEN_PRICE = 500          # 1 token narxi so'mda (default)
-CHARS_PER_PAGE = 1800      # docx/txt/pdf: shuncha belgi = 1 sahifa (1 token)
-ROWS_PER_TOKEN = 30        # xlsx: har shuncha qatorga 1 token
-MAX_TOKENS_PER_FILE = 300      # harflarga o'girish: maksimal sahifa/token
-MAX_TRANSLATE_TOKENS = 200     # tarjima: maksimal sahifa/token
+# Premium — barcha imkoniyatlar cheksiz. Premiumsiz user FREE_FILES ta faylni bepul
+# tahrirlaydi. FREE_FILES va PREMIUM_PRICE — DASTLABKI (default) qiymatlar,
+# admin panel ularni bazada (settings jadvalida) o'zgartiradi.
+FREE_FILES = 2             # yangi userga beriladigan bepul fayllar soni (default)
+PREMIUM_PRICE = 20_000     # premium narxi so'mda (default)
+PREMIUM_DAYS = 30          # bitta to'lov necha kunlik premium beradi
+PREMIUM_PACKAGE = "premium_30"
 
-# Token paketlaridagi token sonlari. Narx = token soni × TOKEN_PRICE (bazadan olinadi).
-PACKAGE_TOKENS = {
-    "pkg_20": 20,
-    "pkg_40": 40,
-    "pkg_60": 60,
-    "pkg_80": 80,
-    "pkg_100": 100,
-}
+CHARS_PER_PAGE = 1800      # docx/txt: shuncha belgi = 1 sahifa
+ROWS_PER_PAGE = 30         # xlsx: har shuncha qator = 1 sahifa
+MAX_PAGES_PER_FILE = 300   # bitta fayl uchun maksimal hajm (sahifa)
 
 # Bazadagi sozlama kalitlari (admin paneldan o'zgartiriladi)
-SETTING_FREE_TOKENS = "free_tokens"
-SETTING_TOKEN_PRICE = "token_price"
+SETTING_FREE_FILES = "free_files"
+SETTING_PREMIUM_PRICE = "premium_price"
+
+# --- Imlo tuzatish ---
+# AI faqat qoidalar hal qila olmaydigan murakkab gaplarga ishlatiladi
+SPELL_AI = env.bool("SPELL_AI", True)
+SPELL_AI_MAX_SENTENCES = env.int("SPELL_AI_MAX_SENTENCES", 1500)  # bitta fayldan

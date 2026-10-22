@@ -5,17 +5,15 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# LibreOffice (DOCX -> PDF), shriftlar (ş/ç/ğ/ö) va opencv uchun kutubxona.
-# Carlito/Caladea — Calibri/Cambria bilan bir xil o'lchamli (PDF tahriri uchun)
+# PDF tahriri uchun shriftlar (ş/ç/ğ/ö). Carlito/Caladea — Calibri/Cambria bilan
+# bir xil o'lchamli, Liberation — Times New Roman/Arial bilan bir xil o'lchamli
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        libreoffice-writer \
         fonts-dejavu-core \
         fonts-liberation \
         fonts-liberation2 \
         fonts-crosextra-carlito \
         fonts-crosextra-caladea \
-        libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Asl Times New Roman / Arial (PDF tahririda shrift aynan bir xil bo'lishi uchun).

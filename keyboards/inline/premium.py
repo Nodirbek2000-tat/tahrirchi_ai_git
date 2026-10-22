@@ -4,16 +4,14 @@ from data import config
 from keyboards.inline.callbacks import buy_cb, receipt_cb
 
 
-def packages_keyboard(token_price: int) -> InlineKeyboardMarkup:
+def premium_keyboard(price: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
-    for package, tokens in config.PACKAGE_TOKENS.items():
-        amount = tokens * token_price
-        kb.add(
-            InlineKeyboardButton(
-                text=f"{tokens} token — {amount:,} so'm".replace(",", " "),
-                callback_data=buy_cb.new(package=package),
-            )
+    kb.add(
+        InlineKeyboardButton(
+            text=f"💎 Premium olish — {price:,} so'm / {config.PREMIUM_DAYS} kun".replace(",", " "),
+            callback_data=buy_cb.new(package=config.PREMIUM_PACKAGE),
         )
+    )
     return kb
 
 

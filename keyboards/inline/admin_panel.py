@@ -7,7 +7,7 @@ def free_gift_keyboard(diff: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
         InlineKeyboardButton(
-            f"✅ Eski userlarga +{diff} token sovg'a qilish",
+            f"✅ Eski userlarga +{diff} bepul fayl sovg'a qilish",
             callback_data=free_gift_cb.new(action="all"),
         ),
         InlineKeyboardButton("🆕 Faqat yangi userlarga", callback_data=free_gift_cb.new(action="new")),
@@ -21,8 +21,9 @@ def admin_menu() -> InlineKeyboardMarkup:
     kb.add(
         InlineKeyboardButton("📊 Statistika", callback_data=admin_cb.new(action="stats")),
         InlineKeyboardButton("📣 Reklama yuborish", callback_data=admin_cb.new(action="broadcast")),
-        InlineKeyboardButton("🎁 Free token sozlash", callback_data=admin_cb.new(action="set_free")),
-        InlineKeyboardButton("💵 Token narxi", callback_data=admin_cb.new(action="set_price")),
+        InlineKeyboardButton("🎁 Bepul fayllar soni", callback_data=admin_cb.new(action="set_free")),
+        InlineKeyboardButton("💎 Premium narxi", callback_data=admin_cb.new(action="set_price")),
+        InlineKeyboardButton("👑 Premium berish", callback_data=admin_cb.new(action="give_premium")),
         InlineKeyboardButton("➕ Admin qo'shish", callback_data=admin_cb.new(action="add_admin")),
         InlineKeyboardButton("📢 Majburiy obuna kanallari", callback_data=admin_cb.new(action="channels")),
         InlineKeyboardButton("❌ Yopish", callback_data=admin_cb.new(action="close")),

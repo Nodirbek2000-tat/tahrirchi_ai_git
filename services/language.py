@@ -145,3 +145,108 @@ def neighbor_contexts(texts: list[str]) -> list[str | None]:
                 out[cyr[k]] = texts[cyr[k - d]]
                 break
     return out
+
+
+# ============================================================ Lotin: o'zbekcha yoki inglizcha
+_LAT_WORD_RE = re.compile(r"[a-z']+")
+_APOS_TO_PLAIN = str.maketrans({c: "'" for c in "ʻʼ‘’`´ʹ′ˈ‛ʽꞌ"})
+_UZL_WORDS = frozenset((
+    "va bu uchun bilan ham edi esa deb bir yoki lekin ammo shu ushbu mazkur barcha har "
+    "bo'lgan bo'lib bo'yicha orqali kabi keyin haqida o'z ular biz siz men sen shuningdek "
+    "ya'ni emas bor yo'q kerak hamda juda yangi katta ko'p hozir hozirgi asosiy boshqa eng "
+    "agar chunki balki hatto o'sha nima kim qanday qachon yil yili yilda ilmiy milliy "
+    "tarixiy ko'ra to'g'risida shahar shahri viloyati tumani tashkil etish etadi qilish "
+    "qildi qilgan olib kelib bugun kun ikki uch to'rt besh o'n yuz ming qism bob kirish "
+    "xulosa mundarija ishi ish deyarli faqat hamma butun"
+).split())
+_EN_WORDS = frozenset((
+    "the and of to in is are was were for with that this on as by from at an be it or not "
+    "have has had which their they you we he she but been will would can could there what "
+    "about into than its also more these other some such only most may after over all one "
+    "two new our your his her them who when where how why if so no do does did use used"
+).split())
+_UZL_ENDINGS = ("lar", "larni", "larga", "larda", "lardan", "lari", "ning", "dagi", "moqda",
+                "ligi", "lik", "ganlar", "gan", "adi", "ilar", "ishi", "ini", "iga", "ida",
+                "idan", "lari", "miz", "ingiz", "chi", "siz")
+_EN_ENDINGS = ("tion", "tions", "ing", "ness", "ment", "ments", "ous", "ity", "ies", "ed",
+               "ly", "able", "ible", "ful", "less", "ship", "ive")
+
+
+@lru_cache(maxsize=8192)
+def classify_latin(text: str) -> str | None:
+    """Lotin matn o'zbekchami ("uz") yoki inglizchami ("en"); aniqlanmasa None."""
+    low = text.lower().translate(_APOS_TO_PLAIN)
+    uz = en = 0
+    for w in _LAT_WORD_RE.findall(low):
+        w = w.strip("'")
+        if not w:
+            continue
+        if w in _UZL_WORDS:
+            uz += 2
+            continue
+        if w in _EN_WORDS:
+            en += 2
+            continue
+        if "o'" in w or "g'" in w or "q" in w and "qu" not in w:
+            uz += 2
+        elif "w" in w or "th" in w or re.search(r"c(?!h)", w):
+            en += 1
+        if len(w) > 4:
+            if w.endswith(_UZL_ENDINGS):
+                uz += 1
+            elif w.endswith(_EN_ENDINGS):
+                en += 1
+    if uz > en and uz >= _MIN_SCORE:
+        return "uz"
+    if en > uz and en >= _MIN_SCORE:
+        return "en"
+    return None
+
+
+def script_of(text: str) -> str | None:
+    """Matnning asosiy yozuvi: "cyr", "lat" yoki None (harf yo'q)."""
+    cyr = lat = 0
+    for ch in text:
+        if "Ѐ" <= ch <= "ӿ":
+            cyr += 1
+        elif ch.isascii() and ch.isalpha() or ch in "şçğöŞÇĞÖ":
+            lat += 1
+    if not cyr and not lat:
+        return None
+    return "cyr" if cyr >= lat else "lat"
+
+
+def resolve_languages(texts: list[str], unknown_cyr_is_uz: bool = True) -> list[str | None]:
+    """Har bir paragraf tili: "uz_cyr", "ru", "uz_lat", "en" yoki None (harf yo'q).
+
+    Aniqlanmagan qisqa paragraf shu yozuvdagi eng yaqin aniqlangan qo'shnisiga,
+    u ham bo'lmasa: kirill — unknown_cyr_is_uz, lotin — o'zbekcha deb olinadi.
+    """
+    scripts = [script_of(t) if t else None for t in texts]
+    langs: list[str | None] = []
+    for t, s in zip(texts, scripts):
+        if s == "cyr":
+            lang = classify_cyrillic(t)
+            langs.append({"uz": "uz_cyr", "ru": "ru"}.get(lang) if lang else None)
+        elif s == "lat":
+            lang = classify_latin(t)
+            langs.append({"uz": "uz_lat", "en": "en"}.get(lang) if lang else None)
+        else:
+            langs.append(None)
+    out = list(langs)
+    for script, fallback in (("cyr", "uz_cyr" if unknown_cyr_is_uz else "ru"), ("lat", "uz_lat")):
+        idx = [i for i, s in enumerate(scripts) if s == script]
+        n = len(idx)
+        for k, i in enumerate(idx):
+            if langs[i] is not None:
+                continue
+            found = None
+            for d in range(1, _NEIGHBORS + 1):
+                if k + d < n and langs[idx[k + d]]:
+                    found = langs[idx[k + d]]
+                    break
+                if k - d >= 0 and langs[idx[k - d]]:
+                    found = langs[idx[k - d]]
+                    break
+            out[i] = found or fallback
+    return out

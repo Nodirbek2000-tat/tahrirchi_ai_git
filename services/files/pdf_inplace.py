@@ -48,7 +48,7 @@ class UnreadablePdfError(Exception):
         return (
             f"❌ {self}.\n\n"
             "Bunday PDF'dagi harflarni xatosiz o'zgartirib bo'lmaydi. Iloji bo'lsa "
-            "asl Word/PowerPoint faylini yuboring.\n🪙 Token yechilmadi."
+            "asl Word/PowerPoint faylini yuboring.\n🎁 Bepul fayllaringiz kamaymadi."
         )
 
 
@@ -294,11 +294,20 @@ def _page_lines(page) -> list[_Line]:
     return result
 
 
-def _line_contexts(lines: list[_Line], conv: Converter) -> list[str]:
-    """Har qator uchun kontekst: o'z bloki yoki (til aniqlanmasa) qo'shni blok matni."""
+def _line_contexts(lines: list[_Line], conv: Converter) -> list:
+    """Har qator uchun kontekst: o'z bloki yoki (til aniqlanmasa) qo'shni blok matni.
+    Blokning 2-qatoridan boshlab kontekst oldingi qatorga qarab aniqlashtiriladi."""
     blocks = list(dict.fromkeys(ln.block_text for ln in lines))
     resolved = dict(zip(blocks, conv.contexts(blocks)))
-    return [resolved[ln.block_text] or ln.block_text for ln in lines]
+    out, prev_block, prev_text = [], None, None
+    for ln in lines:
+        ctx = resolved[ln.block_text] or ln.block_text
+        text = "".join(ch.c for ch in ln.chars)
+        if ln.block_text == prev_block:
+            ctx = conv.split_context(ctx, prev_text)
+        out.append(ctx)
+        prev_block, prev_text = ln.block_text, text
+    return out
 
 
 def _bad_chars(lines: list[_Line]) -> tuple[int, int]:
@@ -548,19 +557,28 @@ def transliterate_pdf(in_path: str, out_path: str, conv: Converter, report) -> N
                     graphics=fitz.PDF_REDACT_LINE_ART_NONE,
                     text=fitz.PDF_REDACT_TEXT_REMOVE,
                 )
-                # Oddiy so'zlar bir xil rang/shaffoflik bo'yicha bitta blokka yig'iladi
-                # (fayl hajmi kichik); siqilgan qatorlar alohida yoziladi
-                writers: dict = {}
+                # Ketma-ket bir xil rang/shaffoflikdagi bo'laklar bitta blokka yig'iladi
+                # (fayl hajmi kichik). Yozish O'QISH TARTIBIDA — rangli so'z qator
+                # ichida qoladi (matn qatlami va keyingi tekshiruvlar uchun muhim).
+                writer, key = None, None
                 registered: set = set()
+
+                def flush():
+                    nonlocal writer
+                    if writer is not None:
+                        writer.write_text(page, color=key[0], opacity=key[1])
+                        writer = None
+
                 for ins in inserts:
                     if abs(ins.sx - 1) <= 0.001 and abs(ins.sy - 1) <= 0.001:
-                        key = (ins.color, round(ins.opacity, 3))
-                        writer = writers.get(key)
-                        if writer is None:
-                            writer = writers[key] = fitz.TextWriter(page.rect)
+                        ins_key = (ins.color, round(ins.opacity, 3))
+                        if writer is None or ins_key != key:
+                            flush()
+                            writer, key = fitz.TextWriter(page.rect), ins_key
                         writer.append(ins.point, ins.text, font=fonts[ins.font_path],
                                       fontsize=ins.size)
                         continue
+                    flush()   # siqilgan qator alohida yoziladi
                     name = names[ins.font_path]
                     if name not in registered:
                         page.insert_font(fontname=name, fontbuffer=buffers[ins.font_path])
@@ -570,8 +588,7 @@ def transliterate_pdf(in_path: str, out_path: str, conv: Converter, report) -> N
                         color=ins.color, fill_opacity=ins.opacity,
                         morph=(fitz.Point(ins.pivot), fitz.Matrix(ins.sx, ins.sy)),
                     )
-                for (color, opacity), writer in writers.items():
-                    writer.write_text(page, color=color, opacity=opacity)
+                flush()
         doc.save(out_path, garbage=1, deflate=True)
     finally:
         if not doc.is_closed:

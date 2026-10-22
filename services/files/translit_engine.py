@@ -299,26 +299,36 @@ def _spec_segments(root, spec: _Spec, conv: Converter):
     Kataklar (Excel) bir-biriga bog'liq emas va jadval ustun nomlari bilan bir xil
     o'girilishi shart — shuning uchun ularga qo'shni kontekst berilmaydi.
     """
-    segs = [seg for pieces in _build_groups(root, spec).values() for seg in _segments(pieces)]
+    segs, firsts = [], []
+    for pieces in _build_groups(root, spec).values():
+        for k, seg in enumerate(_segments(pieces)):
+            segs.append(seg)
+            firsts.append(k == 0)
     texts = ["".join(_piece_text(p) for p in seg) for seg in segs]
-    ctxs = conv.contexts(texts) if spec.flow else [None] * len(texts)
+    ctxs = conv.contexts(texts, firsts) if spec.flow else [None] * len(texts)
     return zip(segs, texts, ctxs)
+
+
+def _spec_conv(spec: _Spec, conv: Converter) -> Converter:
+    return conv if spec.flow else conv.for_cells()
 
 
 def _scan_text(root, specs, conv: Converter, counter: Counter) -> None:
     for spec in specs:
-        for _, joined, ctx in _spec_segments(root, spec, conv):
+        c = _spec_conv(spec, conv)
+        for _, joined, ctx in _spec_segments(root, spec, c):
             if joined:
-                counter.update(conv.count(joined, ctx))
+                counter.update(c.count(joined, ctx))
 
 
 def _apply_text(root, specs, conv: Converter) -> int:
     changed = 0
     for spec in specs:
-        for seg, joined, ctx in _spec_segments(root, spec, conv):
+        c = _spec_conv(spec, conv)
+        for seg, joined, ctx in _spec_segments(root, spec, c):
             if not joined:
                 continue
-            edits = conv.edits(joined, ctx)
+            edits = c.edits(joined, ctx)
             if not edits:
                 continue
             texts = [_piece_text(p) for p in seg]
@@ -562,11 +572,12 @@ def _load_parts(zin: zipfile.ZipFile) -> dict:
 
 def _scan_parts(parts: dict, conv: Converter) -> Counter:
     counter: Counter = Counter()
-    ctx = _xl_context(parts, conv)
+    cell_conv = conv.for_cells()
+    ctx = _xl_context(parts, cell_conv)
     for part in parts.values():
         _scan_text(part.root, part.specs, conv, counter)
         if part.extras:
-            _extras_count(part, ctx, conv, counter)
+            _extras_count(part, ctx, cell_conv, counter)
     return counter
 
 
@@ -604,13 +615,14 @@ def _convert_zip(zin: zipfile.ZipFile, zout: zipfile.ZipFile, report: TranslitRe
     changed: set = set()
     remaining = sum(found.values())
     rounds = 0
+    cell_conv = conv.for_cells()
     while remaining and rounds < _MAX_ROUNDS:
         rounds += 1
-        ctx = _xl_context(parts, conv)   # jadval nomlari o'girilishidan OLDIN olinadi
+        ctx = _xl_context(parts, cell_conv)   # jadval nomlari o'girilishidan OLDIN olinadi
         for name, part in parts.items():
             n = _apply_text(part.root, part.specs, conv)
             if part.extras:
-                n += _extras_apply(part, ctx, conv)
+                n += _extras_apply(part, ctx, cell_conv)
             if n:
                 changed.add(name)
                 report.converted += n
@@ -652,8 +664,9 @@ def _leftovers(path: str, conv: Converter, limit: int = 10) -> list[str]:
     with zipfile.ZipFile(path) as zin:
         for name, part in _load_parts(zin).items():
             for spec in part.specs:
-                for _, joined, ctx in _spec_segments(part.root, spec, conv):
-                    for start, _, _, _ in conv.edits(joined, ctx):
+                c = _spec_conv(spec, conv)
+                for _, joined, ctx in _spec_segments(part.root, spec, c):
+                    for start, _, _, _ in c.edits(joined, ctx):
                         found.append(f"{name}: …{joined[max(0, start - 15):start + 15]}…")
                         if len(found) >= limit:
                             return found
@@ -672,6 +685,24 @@ def scan_file(path: str, conv: Converter = NEW_ALPHABET) -> Counter | None:
     if ext == ".pdf":
         return scan_pdf(path, conv)
     return None
+
+
+def flow_texts(path: str, conv: Converter) -> list[tuple[str, object]]:
+    """Oddiy matn paragraflari (Word, PowerPoint, TXT) kontekstlari bilan — masalan,
+    AI'ga yuboriladigan gaplarni tanlash uchun. Excel kataklari va PDF kirmaydi."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".txt":
+        lines = _read_txt(path).split("\n")
+        return list(zip(lines, conv.contexts(lines)))
+    if ext not in (".docx", ".pptx"):
+        return []
+    out = []
+    with zipfile.ZipFile(path) as zin:
+        for part in _load_parts(zin).values():
+            for spec in part.specs:
+                if spec.flow:
+                    out.extend((t, c) for _, t, c in _spec_segments(part.root, spec, conv) if t)
+    return out
 
 
 def _transliterate_ooxml(in_path: str, out_path: str, conv: Converter) -> TranslitReport:
