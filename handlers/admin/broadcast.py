@@ -9,6 +9,7 @@ from keyboards.inline.admin_panel import admin_menu
 from keyboards.inline.broadcast import ad_markup, confirm_broadcast_keyboard
 from keyboards.inline.callbacks import broadcast_cb
 from loader import bot, dp
+from utils.misc.filters import not_command
 from services.broadcast import run_broadcast
 from states import BroadcastState
 
@@ -46,7 +47,7 @@ async def broadcast_cancel(message: types.Message, state: FSMContext):
 
 
 # --- 1) Matn ---
-@dp.message_handler(state=BroadcastState.text, content_types=types.ContentType.ANY)
+@dp.message_handler(not_command, state=BroadcastState.text, content_types=types.ContentType.ANY)
 async def broadcast_text(message: types.Message, state: FSMContext):
     if not message.text:
         await message.answer("❗ Iltimos, reklama matnini yuboring.")
@@ -63,7 +64,7 @@ async def broadcast_photo_skip(message: types.Message, state: FSMContext):
     await message.answer("3-qadam: <b>Tugma nomini</b> yuboring yoki /skip.")
 
 
-@dp.message_handler(state=BroadcastState.photo, content_types=types.ContentType.ANY)
+@dp.message_handler(not_command, state=BroadcastState.photo, content_types=types.ContentType.ANY)
 async def broadcast_photo(message: types.Message, state: FSMContext):
     if not message.photo:
         await message.answer("❗ Rasm yuboring yoki /skip.")
@@ -79,7 +80,7 @@ async def broadcast_name_skip(message: types.Message, state: FSMContext):
     await _show_preview(message.chat.id, state)
 
 
-@dp.message_handler(state=BroadcastState.button_name, content_types=types.ContentType.ANY)
+@dp.message_handler(not_command, state=BroadcastState.button_name, content_types=types.ContentType.ANY)
 async def broadcast_button_name(message: types.Message, state: FSMContext):
     if not message.text:
         await message.answer("❗ Tugma nomini matn ko'rinishida yuboring yoki /skip.")
@@ -92,7 +93,7 @@ async def broadcast_button_name(message: types.Message, state: FSMContext):
 
 
 # --- 4) Tugma linki ---
-@dp.message_handler(state=BroadcastState.button_url, content_types=types.ContentType.ANY)
+@dp.message_handler(not_command, state=BroadcastState.button_url, content_types=types.ContentType.ANY)
 async def broadcast_button_url(message: types.Message, state: FSMContext):
     url = (message.text or "").strip()
     if not (url.startswith("http://") or url.startswith("https://") or url.startswith("t.me/")):

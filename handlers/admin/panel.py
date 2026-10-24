@@ -21,6 +21,7 @@ from keyboards.inline.admin_panel import (
 )
 from keyboards.inline.callbacks import admin_cb, channel_del_cb, free_gift_cb
 from loader import bot, dp
+from utils.misc.filters import not_command
 from services.access import fmt_date, free_files_default, premium_price
 from services.broadcast import run_personal
 from states import AdminState, BroadcastState
@@ -204,7 +205,7 @@ async def delete_channel(
 
 
 # ---------- Yangi admin qabul qilish ----------
-@dp.message_handler(state=AdminState.waiting_new_admin, content_types=types.ContentType.ANY)
+@dp.message_handler(not_command, state=AdminState.waiting_new_admin, content_types=types.ContentType.ANY)
 async def receive_new_admin(
     message: types.Message, admins: AdminRepository, state: FSMContext
 ):
@@ -238,7 +239,7 @@ def _parse_channel(raw: str) -> str:
     return raw
 
 
-@dp.message_handler(state=AdminState.waiting_channel, content_types=types.ContentType.ANY)
+@dp.message_handler(not_command, state=AdminState.waiting_channel, content_types=types.ContentType.ANY)
 async def receive_channel(
     message: types.Message, channels: ChannelRepository, state: FSMContext
 ):
@@ -282,7 +283,7 @@ async def receive_channel(
 
 
 # ---------- Bepul fayllar soni ----------
-@dp.message_handler(state=AdminState.waiting_free_files, content_types=types.ContentType.ANY)
+@dp.message_handler(not_command, state=AdminState.waiting_free_files, content_types=types.ContentType.ANY)
 async def receive_free_files(
     message: types.Message,
     users: UserRepository,
@@ -400,7 +401,7 @@ async def confirm_free_gift(
 
 
 # ---------- Premium narxi ----------
-@dp.message_handler(state=AdminState.waiting_premium_price, content_types=types.ContentType.ANY)
+@dp.message_handler(not_command, state=AdminState.waiting_premium_price, content_types=types.ContentType.ANY)
 async def receive_premium_price(
     message: types.Message, settings: SettingRepository, state: FSMContext
 ):
@@ -422,7 +423,7 @@ async def receive_premium_price(
 
 
 # ---------- Qo'lda premium berish ----------
-@dp.message_handler(state=AdminState.waiting_premium_user, content_types=types.ContentType.ANY)
+@dp.message_handler(not_command, state=AdminState.waiting_premium_user, content_types=types.ContentType.ANY)
 async def receive_premium_user(
     message: types.Message, users: UserRepository, state: FSMContext
 ):
@@ -457,7 +458,7 @@ async def receive_premium_user(
 
 
 # ---------- Bitta userga bepul fayl berish ----------
-@dp.message_handler(state=AdminState.waiting_user_files, content_types=types.ContentType.ANY)
+@dp.message_handler(not_command, state=AdminState.waiting_user_files, content_types=types.ContentType.ANY)
 async def receive_user_files(
     message: types.Message, users: UserRepository, state: FSMContext
 ):
